@@ -1,0 +1,5 @@
+# This directory will be populated when testing from input directory
+# Ignore everything in this directory
+*
+# Except this file
+!.gitignore

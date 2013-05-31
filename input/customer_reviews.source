@@ -1,0 +1,64 @@
+--
+-- Test customer reviews dataset queries.
+--
+
+CREATE FOREIGN TABLE customer_reviews
+(
+    customer_id TEXT not null,
+    "review.date" DATE not null,
+    "review.rating" INTEGER not null,
+    "review.votes" INTEGER,
+    "review.helpful_votes" INTEGER,
+    "product.id" CHAR(10) not null,
+    "product.title" TEXT not null,
+    "product.sales_rank" BIGINT,
+    "product.group" TEXT,
+    "product.category" TEXT,
+    "product.subcategory" TEXT,
+    similar_product_ids CHAR(10)[]
+)
+SERVER json_server
+OPTIONS(filename '@abs_srcdir@/data/customer_reviews_1998.1000.json.gz');
+
+
+-- How people rate your products?
+
+SELECT
+    extract(month from "review.date") AS review_month,
+    round(avg("review.rating"), 2),
+    count(*)
+FROM
+    customer_reviews
+GROUP BY
+    review_month
+ORDER BY
+    review_month;
+
+-- Do we have a correlation between a book's title's length and its review ratings?
+
+SELECT
+    width_bucket(length("product.title"), 1, 50, 5) title_length_bucket,
+    round(avg("review.rating"), 2) AS review_average,
+    count(*)
+FROM
+   customer_reviews
+WHERE
+    "product.group" = 'Book'
+GROUP BY
+    title_length_bucket
+ORDER BY
+    title_length_bucket;
+
+-- Does the average review rating change by product category?
+
+SELECT
+    "product.category",
+    round(avg("review.rating"), 2),
+    count(*)
+FROM
+    customer_reviews
+GROUP BY
+    "product.category"
+ORDER BY
+    count(*) DESC, "product.category"
+LIMIT 20;

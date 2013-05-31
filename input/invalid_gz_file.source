@@ -1,0 +1,27 @@
+--
+-- Test that we handle invalid gzip files properly.
+--
+
+\set VERBOSITY terse
+
+CREATE FOREIGN TABLE invalid_gz_file_table
+(
+    customer_id TEXT not null,
+    "review.date" DATE not null,
+    "review.rating" INTEGER not null,
+    "review.votes" INTEGER,
+    "review.helpful_votes" INTEGER,
+    "product.id" CHAR(10) not null,
+    "product.title" TEXT not null,
+    "product.sales_rank" BIGINT,
+    "product.group" TEXT,
+    "product.category" TEXT,
+    "product.subcategory" TEXT,
+    similar_product_ids CHAR(10)[]
+)
+SERVER json_server
+OPTIONS(filename '@abs_srcdir@/data/invalid_gz_file.json.gz');
+
+select count(*) from invalid_gz_file_table;
+
+\set VERBOSITY default

@@ -1,0 +1,35 @@
+--
+-- Test customer reviews dataset which is stored as a HDFS block.
+--
+
+CREATE FOREIGN TABLE customer_reviews_hdfs_block
+(
+    customer_id TEXT not null,
+    "review.date" DATE not null,
+    "review.rating" INTEGER not null,
+    "review.votes" INTEGER,
+    "review.helpful_votes" INTEGER,
+    "product.id" CHAR(10) not null,
+    "product.title" TEXT not null,
+    "product.sales_rank" BIGINT,
+    "product.group" TEXT,
+    "product.category" TEXT,
+    "product.subcategory" TEXT,
+    similar_product_ids CHAR(10)[]
+)
+SERVER json_server
+OPTIONS(filename '@abs_srcdir@/data/blk_-729487577044220672', 
+        max_error_count '2');
+
+-- Does the average review rating change by product category?
+SELECT
+    "product.category",
+    round(avg("review.rating"), 2),
+    count(*)
+FROM
+    customer_reviews_hdfs_block
+GROUP BY
+    "product.category"
+ORDER BY
+    count(*) DESC, "product.category"
+LIMIT 20;

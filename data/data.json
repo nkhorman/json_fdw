@@ -1,0 +1,8 @@
+{"id": 1, "type": "person", "name": "Beatus Henk", "birthdate": "1973-06-24", "actions": [1]}
+{"id": 2, "type": "person", "name": "Lugos Alfons", "birthdate": "1961-08-30"}
+{"id": 3, "type": "person", "name": "Temür Essa", "birthdate": "1995-07-28", "actions": [2, 2, 1, 3]}
+{"id": 4, "type": "resturaunt", "name": "Mingus Kitchen", "position": {"lat": -4.83798e1, "lon": -65.43274, "address": {"country": "Argentina"}}, "last_update": "2013-01-02 12:05:01"}
+{"id": 5, "type": "resturaunt", "name": "Café Utopia Lounge", "position": {"lat": 429.7208e-1, "lon": 143.39097}, "last_update_tz": "2013-01-02 12:05:01 America/New_York"}
+{"id": 6, "type": "invalid_record", "birthdate": null, "last_update": "invalid time format", "position": "Canada"}
+{"id": 9223372036854775807}
+{"id": -9223372036854775808}

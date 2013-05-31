@@ -1,0 +1,106 @@
+--
+-- Test json foreign data wrapper.
+--
+-- Settings to make the result deterministic
+SET datestyle = "ISO, YMD";
+-- Install json_fdw
+CREATE EXTENSION json_fdw;
+CREATE SERVER json_server FOREIGN DATA WRAPPER json_fdw;
+-- validator tests
+CREATE FOREIGN TABLE test_validator_filename_missing () 
+	SERVER json_server; -- ERROR
+ERROR:  filename is required for json_fdw foreign tables
+CREATE FOREIGN TABLE test_validator_invalid_option () 
+	SERVER json_server 
+	OPTIONS(filename 'data.json', bad_option_name '1'); -- ERROR
+ERROR:  invalid option "bad_option_name"
+HINT:  Valid options in this context are: filename, max_error_count, hdfs_directory_path
+-- data conversion tests
+CREATE FOREIGN TABLE json_data (id int8, type char(20), name text, 
+	birthdate date, actions int[], "position.lat" float, "position.lon" float, 
+	"position.address.country" varchar(50), last_update timestamp,
+	last_update_tz timestamp with time zone
+	) SERVER json_server OPTIONS(filename '@abs_srcdir@/data/data.json');
+SELECT id, type, name FROM json_data ORDER BY id;
+          id          |         type         |        name        
+----------------------+----------------------+--------------------
+ -9223372036854775808 |                      | 
+                    1 | person               | Beatus Henk
+                    2 | person               | Lugos Alfons
+                    3 | person               | Temür Essa
+                    4 | resturaunt           | Mingus Kitchen
+                    5 | resturaunt           | Café Utopia Lounge
+                    6 | invalid_record       | 
+  9223372036854775807 |                      | 
+(8 rows)
+
+SELECT id, name, birthdate FROM json_data WHERE type = 'person' ORDER BY id;
+ id |     name     | birthdate  
+----+--------------+------------
+  1 | Beatus Henk  | 1973-06-24
+  2 | Lugos Alfons | 1961-08-30
+  3 | Temür Essa   | 1995-07-28
+(3 rows)
+
+SELECT id, "position.lat" AS lat, "position.lon" AS lon, 
+	"position.address.country" AS country, last_update 
+	FROM json_data WHERE type = 'resturaunt' ORDER BY id;
+ id |   lat    |    lon    |  country  |     last_update     
+----+----------+-----------+-----------+---------------------
+  4 | -48.3798 | -65.43274 | Argentina | 2013-01-02 12:05:01
+  5 | 42.97208 | 143.39097 |           | 
+(2 rows)
+
+SELECT id, type, birthdate, last_update, "position.lon" as lon 
+	FROM json_data WHERE type = 'invalid_record' ORDER BY id;
+ id |         type         | birthdate | last_update | lon 
+----+----------------------+-----------+-------------+-----
+  6 | invalid_record       |           |             |    
+(1 row)
+
+SELECT last_update_tz AT TIME ZONE 'UTC' FROM json_data 
+	WHERE last_update_tz IS NOT NULL;
+      timezone       
+---------------------
+ 2013-01-02 17:05:01
+(1 row)
+
+-- max error count test
+CREATE FOREIGN TABLE test_skip_broken_on (a integer, b integer) 
+	SERVER json_server 
+	OPTIONS (filename '@abs_srcdir@/data/data_broken.json', max_error_count '1');
+SELECT * FROM test_skip_broken_on ORDER BY a;
+ a | b 
+---+---
+ 1 | 2
+ 2 | 3
+ 3 | 4
+(3 rows)
+
+CREATE FOREIGN TABLE test_skip_broken_off (a integer, b integer) 
+	SERVER json_server 
+	OPTIONS (filename '@abs_srcdir@/data/data_broken.json', max_error_count '0');
+SELECT * FROM test_skip_broken_off; -- ERROR
+ERROR:  could not parse 1 json objects
+HINT:  Last error message at line: 4: parse error: premature EOF
+                                       {"a": 3,  
+                     (right here) ------^
+
+-- error scenarios
+CREATE FOREIGN TABLE test_missing_file () SERVER json_server 
+	OPTIONS (filename '@abs_srcdir@/data/missing_file.json');
+SELECT * FROM test_missing_file; -- ERROR
+ERROR:  could not open file "@abs_srcdir@/data/missing_file.json" for reading: No such file or directory
+CREATE FOREIGN TABLE test_string_length_check (type CHAR(6)) SERVER json_server
+	OPTIONS (filename '@abs_srcdir@/data/data.json');
+SELECT * FROM test_string_length_check; -- ERROR
+ERROR:  value too long for type character(6)
+CREATE FOREIGN TABLE test_int_range_check (id int4) SERVER json_server
+	OPTIONS (filename '@abs_srcdir@/data/data.json');
+SELECT * FROM test_int_range_check; -- ERROR
+ERROR:  value "9223372036854775807" is out of range for type integer
+CREATE FOREIGN TABLE test_decimal_range_check ("position.lat" decimal(3, 2))
+	SERVER json_server OPTIONS (filename '@abs_srcdir@/data/data.json');
+SELECT * FROM test_decimal_range_check; -- ERROR
+ERROR:  numeric field overflow
+DETAIL:  A field with precision 3, scale 2 must round to an absolute value less than 10^1.
