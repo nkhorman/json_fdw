@@ -1,0 +1,44 @@
+{
+   "name": "json_fdw",
+   "abstract": "Foreign Data Wrapper for JSON files",
+   "description": "PostgreSQL extension which implements a Foreign Data Wrapper (FDW) for JSON files.",
+   "version": "1.0.0",
+   "maintainer": "Hadi Moshayedi <hadi@moshayedi.net>",
+   "license": "lgpl_3_0",
+   "provides": {
+      "json_fdw": {
+         "abstract": "Foreign Data Wrapper for JSON files",
+         "file": "json_fdw.c",
+         "docfile": "README.md",
+         "version": "1.0.0"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": ">= 9.2.0, < 9.3.0"
+         }
+      }
+   },
+   "resources": {
+      "bugtracker": {
+         "web": "http://github.com/citusdata/json_fdw/issues/"
+      },
+      "repository": {
+        "url":  "git://github.com/citusdata/json_fdw.git",
+        "web":  "https://github.com/citusdata/json_fdw/",
+        "type": "git"
+      }
+   },
+   "generated_by": "David E. Wheeler",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "http://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "json",
+      "fdw",
+      "foreign data wrapper",
+      "json_fdw"
+   ]
+}
