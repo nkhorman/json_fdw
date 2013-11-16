@@ -48,6 +48,10 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#if PG_VERSION_NUM >= 90300
+	#include "access/htup_details.h"
+#endif
+
 
 /* Local functions forward declarations */
 static StringInfo OptionNamesString(Oid currentContextId);

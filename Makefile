@@ -3,7 +3,15 @@
 MODULE_big = json_fdw
 
 OBJS = json_fdw.o
-SHLIB_LINK = -lz -l:libyajl.so.2
+
+ifeq ($(shell uname -s), Linux)
+    # Directly link against yajl 2, so it works in Ubuntu 12.04 too.
+    SHLIB_LINK = -lz -l:libyajl.so.2
+else
+    # Non-linux OS's (in particular, OS X) don't support "-l:" syntax, 
+    # so use the -lyajl flag instead.
+    SHLIB_LINK = -lz -lyajl
+endif
 
 EXTENSION = json_fdw
 DATA = json_fdw--1.0.sql
