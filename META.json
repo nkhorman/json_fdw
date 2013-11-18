@@ -4,7 +4,7 @@
    "description": "PostgreSQL extension which implements a Foreign Data Wrapper (FDW) for JSON files.",
    "version": "1.0.0",
    "maintainer": "Hadi Moshayedi <hadi@citusdata.com>",
-   "license": "gpl_3_0",
+   "license": "gpl_3",
    "provides": {
       "json_fdw": {
          "abstract": "Foreign Data Wrapper for JSON files",
