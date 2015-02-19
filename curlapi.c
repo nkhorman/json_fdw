@@ -49,8 +49,16 @@ typedef struct _regexapilist_t
 	int findCount;
 }regexapilist_t;
 
-#define URLSPEC "[a-z0-9][a-z0-9._-]*[.][a-z]{2,}"
+#define URLHOSTNAME "([a-z0-9][a-z0-9._-]*[.][a-z]{2,})"
+#define URLHOSTIPV4 "([0-9]{1,3}[.][0-9]{1,3}[.][0.9]{1,3}[.][0-9]{1,3})"
+#define URLHOSTLOCAL "(localhost)"
+#define URLHOST "(" URLHOSTNAME "|" URLHOSTLOCAL "|" URLHOSTIPV4 ")"
+#define URLPORT "(:[0-9]+)*"
+#define URLSPEC URLHOST URLPORT
 #define URISPEC "/.*"
+
+// http[s]?://([a-z0-9][a-z0-9._-]*[.][a-z]{2,}(:[0-9]+)*)(.*)
+// http[s]?://((([a-z0-9][a-z0-9._-]*[.][a-z]{2,})|(localhost)|([0-9]{1,3}[.][0-9]{1,3}[.][0.9]{1,3}[.][0-9]{1,3}))(:[0-9]+)*)(/.{0,})
 
 // List of valid URL regexes that CURL supports
 static regexapilist_t const regexUrls[] =
@@ -145,10 +153,11 @@ int curlIsUrl(const char *pFname, ciu_t *pCiu)
 
 	// If we found a regex match, then we assume that CURL supports the url
 	if(pRat != NULL)
-	{
+	{	int regexNSubs = regexapi_nsubs(pRat, 0);
 		// Assume that the last subcomponent of the regex is the filename portion
+		const char *pRegexSub = (regexNSubs > 1 ? regexapi_sub(pRat, 0, regexNSubs - 1) : NULL);
 		// and get the basename of that to use as the on disk filename
-		char *pBaseName = strrchr(regexapi_sub(pRat, 0, regexapi_nsubs(pRat, 0) - 1), '/');
+		char *pBaseName = (pRegexSub != NULL ? strrchr(pRegexSub, '/') : NULL);
 
 		if(pBaseName != NULL && *pBaseName)
 		{
@@ -279,6 +288,25 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 		curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0"); // TODO - table option ?
 		curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30); // TODO - table option ?
 
+		curl_easy_setopt(curl_handle, CURLOPT_ACCEPT_ENCODING, ""); // turn on builtin supported default content dencoding
+		curl_easy_setopt(curl_handle, CURLOPT_TRANSFER_ENCODING, 1L); // turn on transfer decoding
+
+		curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L); // turn on redirection following
+		curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 5); // for a maximum of 5
+		curl_easy_setopt(curl_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL); // maintain a post as a post on redirects
+		curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn one Refer when redirecting
+
+		// TODO - auth foo - possibly some or all of these
+		//	CURLOPT_USERPWD or (CURLOPT_USERNAME and CURLOPT_PASSWORD)
+		//	CURLOPT_LOGIN_OPTIONS
+		//	CURLOPT_PROXYUSERNAME and CURLOPT_PROXYPASSWORD
+		//	CURLOPT_HTTPAUTH
+		//	CURLOPT_TLSAUTH_USERNAME and CURLOPT_TLSAUTH_PASSWORD
+		//	CURLOPT_PROXYAUTH
+		//	CURLOPT_SASL_IR
+		//	CURLOPT_XOAUTH2_BEARER
+		//
+
 		if(pPostStr != NULL && *pPostStr)
 		{
 			curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
@@ -318,15 +346,21 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 				&&
 					(
 #ifdef JSON_CONTENT_TYPE_NULL
+					// Highly non-conforming server/application
 					pContentType == NULL ||
 #endif
 #ifdef JSON_CONTENT_TYPE_LIBERAL
+					// If your using a badly configured/coded/non-conforming server
+					// application, you might get one or more of these mime types
 					(pContentType != NULL && strcasecmp("application/x-javascript", pContentType) == 0) ||
 					(pContentType != NULL && strcasecmp("text/javascript", pContentType) == 0) ||
 					(pContentType != NULL && strcasecmp("text/x-javascript", pContentType) == 0) ||
 					(pContentType != NULL && strcasecmp("text/x-json", pContentType) == 0) ||
 					(pContentType != NULL && strcasecmp("text/html", pContentType) == 0) ||
 #endif
+					// The content might be a straight up gzip compressed file
+					(pContentType != NULL && strcasecmp("application/x-gzip", pContentType) == 0) ||
+					// If it is uncompressed, it should look like this
 					(pContentType != NULL && strcasecmp("application/json", pContentType) == 0)
 					)
 #endif
