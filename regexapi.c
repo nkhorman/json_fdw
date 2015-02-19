@@ -212,14 +212,14 @@ int regexapi(const char *pstr, const char *pregex, int cflags)
 }
 
 
-#ifdef _UNIT_TEST
+#ifdef _REGEX_UNIT_TEST
 int main(int argc, char **argv)
 {
 	if(argc == 3)
 	{	int i = 1;
 		regexapi_t *prat = regexapi_exec(argv[i],argv[i+1],REGEX_DEFAULT_CFLAGS,REGEX_FIND_ALL);
 
-		printf("test: '%s' %c= '%s'\n",argv[i],(regexapi_matches(prat) ? '=' : '!'),argv[i+1]);
+		printf("%s: '%s' %c= '%s'\n", argv[0], argv[i], (regexapi_matches(prat) ? '=' : '!'), argv[i+1]);
 		if(regexapi_matches(prat))
 		{	int q;
 
