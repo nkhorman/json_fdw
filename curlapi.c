@@ -81,8 +81,7 @@ static void ciuClose(ciu_t *pCiu)
 
 // Callback from CURL to write contents to disk
 static size_t curlWriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
-{
-	ciu_t *pCiu = (ciu_t *)userp;
+{	ciu_t *pCiu = (ciu_t *)userp;
 
 	return fwrite(contents, size, nmemb, pCiu->diskFile);
 }
@@ -102,36 +101,6 @@ static char *MD5_Ascii(unsigned char *md, char *dst)
 	return dst;
 }
 
-// Build a unique string
-static char *curlSessionUnique(void)
-{	char *pStr = NULL;
-	MD5_CTX md5ctx;
-	unsigned char md5digest[MD5_DIGEST_LENGTH];
-	char md5ascii[(MD5_DIGEST_LENGTH*2)+10];
-
-	memset(&md5ctx, 0, sizeof(md5ctx));
-	memset(&md5digest, 0, sizeof(md5digest));
-	memset(&md5ascii, 0, sizeof(md5ascii));
-
-	// use our thread id and time in epoch form as our uniqueness
-	asprintf(&pStr,"%04X0x%lX", (unsigned int)pthread_self(), (unsigned long)time(NULL));
-
-	// hash it
-	if(pStr != NULL)
-	{
-		MD5_Init(&md5ctx);
-		MD5_Update(&md5ctx, (const unsigned char *)pStr, strlen(pStr));
-		MD5_Final(md5digest, &md5ctx);
-		MD5_Ascii(md5digest, md5ascii);
-		free(pStr);
-	}
-
-	if(strlen(md5ascii))
-		pStr = strdup(md5ascii);
-
-	return pStr;
-}
-
 // Test if filename is a CURL supported URL and setup the ciu_t if it is
 int curlIsUrl(const char *pFname, ciu_t *pCiu)
 {	int isCurlUrl = 0;
@@ -143,56 +112,23 @@ int curlIsUrl(const char *pFname, ciu_t *pCiu)
 	// If we found a regex match, then we assume that CURL supports the url
 	if(pRat != NULL)
 	{
-		// Assume that the last subcomponent of the regex is the filename portion
-		// and get the basename of that to use as the on disk filename
-		char *pBaseName = strrchr(regexapi_sub(pRat, 0, regexapi_nsubs(pRat, 0) - 1), '/');
+		char tmpfnamebuf[MAXFILENAME];
 
-		if(pBaseName != NULL && *pBaseName)
+		memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
+		sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
+
+		if(mkstemp(tmpfnamebuf) != -1)
 		{
-			// The string returned to us is not const, so we'll terminate it
-			// at the URI point, so as to not have silly on disk filenames
-			char *pTerm = strchr(pBaseName, '?');
-			if(pTerm != NULL)
-				*pTerm = 0;
-
-			if(pBaseName[0] == '/' && pBaseName[1] == 0) // the URL didn't specify a file, build a temp filename
-			{
-				char tmpfnamebuf[MAXFILENAME];
-
-				memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
-				sprintf(tmpfnamebuf, "%s/tmp/tmpXXXXXX", CURL_BASE_DIR);
-
-				if(mkstemp(tmpfnamebuf) != -1)
-				{
-					pCiu->diskFileName = strdup(tmpfnamebuf);
-					pCiu->bNeedUnlink = true;
-				}
-			}
-			else	// Use the specified filename from the URL
-			{	char *pUnique = curlSessionUnique();
-
-				// but add a source of uniqueness, so we don't
-				// possibly trample of the filename of another session
-				if(pUnique != NULL)
-				{
-					asprintf(&pCiu->diskFileName, "%s/%s.%s", CURL_BASE_DIR, pUnique, pBaseName);
-					free(pUnique);
-				}
-				else // fall back
-					asprintf(&pCiu->diskFileName, "%s/%s", CURL_BASE_DIR, pBaseName);
-				pCiu->bNeedUnlink = true;
-			}
-
-			// Open the file for writing
-			pCiu->diskFile = (pCiu->diskFileName != NULL ? fopen(pCiu->diskFileName, "w") : NULL);
-			// Unlink it, only if it was marked as tempoary and we did open the file
-			pCiu->bNeedUnlink &= (pCiu->diskFile != NULL);
-
-			// If we succeeded in opening a file, the this is a CURL URL
-			isCurlUrl = (pCiu->diskFile != NULL);
+			pCiu->diskFileName = strdup(tmpfnamebuf);
+			pCiu->bNeedUnlink = true;
 		}
-		else
-			isCurlUrl = 0;	// Because we are here, suffix validation failed
+		// Open the file for writing
+		pCiu->diskFile = (pCiu->diskFileName != NULL ? fopen(pCiu->diskFileName, "w") : NULL);
+		// Unlink it, only if it was marked as tempoary and we did open the file
+		pCiu->bNeedUnlink &= (pCiu->diskFile != NULL);
+
+		// If we succeeded in opening a file, the this is a CURL URL
+		isCurlUrl = (pCiu->diskFile != NULL);
 
 		// Cleanup the regex
 		regexapi_free(pRat);
@@ -233,6 +169,7 @@ static char *curlEncodePostData(const char *src)
 	return str;
 }
 
+// Free the Fetch result structure
 void curlFetchFree(cfr_t *pCfr)
 {
 	if(pCfr != NULL)
@@ -248,13 +185,14 @@ void curlFetchFree(cfr_t *pCfr)
 	}
 }
 
+// Fetch the file from the url
 cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 {	cfr_t *pCfr = calloc(1,sizeof(cfr_t));
 
 	if(pCfr != NULL)
 	{
 		CURLcode res;
-		CURL *curl_handle;
+		CURL *curl_handle = NULL;
 		char *pPostStr = curlEncodePostData(pHttpPostVars);
 
 		curl_global_init(CURL_GLOBAL_ALL);
@@ -291,10 +229,81 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 		// clean up
 		ciuClose(pCiu);
 
-		// this means that we retrived the file
+		// this means that we communicated with the server
 		if(res == CURLE_OK)
-			pCfr->bFileFetched = true;
+		{	unsigned long httpResponseCode = 0;
+			char *pContentType = NULL;
+
+			curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &httpResponseCode);
+			curl_easy_getinfo(curl_handle, CURLINFO_CONTENT_TYPE, &pContentType);
+
+			// validattion
+			pCfr->bFileFetched = (
+				// retrived the file
+				httpResponseCode == 200
+				// make sure it's the correct content type
+#ifndef JSON_CONTENT_TYPE_NONE
+				&&
+					(
+#ifdef JSON_CONTENT_TYPE_NULL
+					pContentType == NULL ||
+#endif
+#ifdef JSON_CONTENT_TYPE_LIBERAL
+					(pContentType != NULL && strcasecmp("application/x-javascript", pContentType) == 0) ||
+					(pContentType != NULL && strcasecmp("text/javascript", pContentType) == 0) ||
+					(pContentType != NULL && strcasecmp("text/x-javascript", pContentType) == 0) ||
+					(pContentType != NULL && strcasecmp("text/x-json", pContentType) == 0) ||
+					(pContentType != NULL && strcasecmp("text/html", pContentType) == 0) ||
+#endif
+					(pContentType != NULL && strcasecmp("application/json", pContentType) == 0)
+					)
+#endif
+				);
+		}
+
+		curl_easy_cleanup(curl_handle);
 	}
 
 	return pCfr;
 }
+
+#ifdef _CURL_UNIT_TEST
+int main(int argc, char **argv)
+{
+	ciu_t ciu;
+	cfr_t *pCfr = NULL;
+	const char *pUrl = (argc >= 2 ? argv[1] : NULL);
+	const char *pHttpPostVars = (argc >= 3 ? argv[2] : NULL);
+	const char *pFileName = NULL;
+
+	if(argc == 1)
+	{
+		printf("%s: [url] [optional post vars]\n", argv[0]);
+		exit(0);
+	}
+
+	if(curlIsUrl(pUrl, &ciu))
+	{
+		pCfr = curlFetch(pUrl, pHttpPostVars, &ciu);
+		if(pCfr != NULL)
+			pFileName = pCfr->pFileName;
+	}
+
+	printf("'%s' --> '%s' == %s\n", pUrl, pFileName, (pCfr && pCfr->bFileFetched ? "OK" : "FAIL"));
+	if(pCfr && pCfr->bFileFetched)
+	{	char *pCmd = NULL;
+
+		//asprintf(&pCmd, "ls -la /tmp/; cat %s", pFileName);
+		asprintf(&pCmd, "cat %s", pFileName);
+		system(pCmd);
+		free(pCmd);
+	}
+
+	curlFetchFree(pCfr);
+
+	//if(pCfr && pCfr->bFileFetched)
+	//	system("ls -la /tmp/");
+
+	return 0;
+}
+#endif
