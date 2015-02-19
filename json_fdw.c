@@ -587,26 +587,18 @@ JsonEndForeignScan(ForeignScanState *scanState)
 static JsonFdwOptions *
 JsonGetOptions(Oid foreignTableId)
 {
-	JsonFdwOptions *jsonFdwOptions = NULL;
-	char *filename = NULL;
-	int32 maxErrorCount = 0;
-	char *maxErrorCountString = NULL;
+	JsonFdwOptions *jsonFdwOptions = (JsonFdwOptions *) palloc0(sizeof(JsonFdwOptions));
 
-	filename = JsonGetOptionValue(foreignTableId, OPTION_NAME_FILENAME);
+	if(jsonFdwOptions != NULL)
+	{	char *maxErrorCountString = JsonGetOptionValue(foreignTableId, OPTION_NAME_MAX_ERROR_COUNT);
 
-	maxErrorCountString = JsonGetOptionValue(foreignTableId, OPTION_NAME_MAX_ERROR_COUNT);
-	if (maxErrorCountString == NULL)
-	{
-		maxErrorCount = DEFAULT_MAX_ERROR_COUNT;
+		jsonFdwOptions->maxErrorCount = (maxErrorCountString != NULL
+			? pg_atoi(maxErrorCountString, sizeof(int32), 0)
+			: DEFAULT_MAX_ERROR_COUNT
+			);
+		jsonFdwOptions->filename = JsonGetOptionValue(foreignTableId, OPTION_NAME_FILENAME);
+		jsonFdwOptions->pHttpPostVars = JsonGetOptionValue(foreignTableId, OPTION_NAME_HTTP_POST_VARS);
 	}
-	else
-	{
-		maxErrorCount = pg_atoi(maxErrorCountString, sizeof(int32), 0);
-	}
-
-	jsonFdwOptions = (JsonFdwOptions *) palloc0(sizeof(JsonFdwOptions));
-	jsonFdwOptions->filename = filename;
-	jsonFdwOptions->maxErrorCount = maxErrorCount;
 
 	return jsonFdwOptions;
 }
