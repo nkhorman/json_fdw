@@ -11,10 +11,12 @@
  *-------------------------------------------------------------------------
  */
 
+#include <stdio.h>
+#include <stdbool.h>
+
 #include "postgres.h"
 #include "json_fdw.h"
 
-#include <stdio.h>
 #include <sys/stat.h>
 #include <yajl/yajl_tree.h>
 #include <zlib.h>
@@ -52,6 +54,7 @@
 	#include "access/htup_details.h"
 #endif
 
+#include "curlapi.h"
 
 /* Local functions forward declarations */
 static StringInfo OptionNamesString(Oid currentContextId);
@@ -339,7 +342,6 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 	}
 }
 
-
 /*
  * JsonBeginForeignScan opens the underlying json file for reading. The function
  * also creates a hash table that maps referenced column names to column index
@@ -359,6 +361,10 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	bool hdfsBlock = false;
 	FILE *filePointer = NULL;
 	gzFile gzFilePointer = NULL;
+	bool openError = false;
+	const char *filename = NULL;
+	ciu_t ciu;
+	cfr_t *pCfr = NULL;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -375,28 +381,44 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	columnList = (List *) linitial(foreignPrivateList);
 	columnMappingHash = ColumnMappingHash(foreignTableId, columnList);
 
-	gzipFile = GzipFilename(options->filename);
-	hdfsBlock = HdfsBlockName(options->filename);
+	filename = options->filename;
 
-	if (gzipFile || hdfsBlock)
+	// See if this is an off box url, and try to fetch it
+	// and then pass it off to one of the native file handlers
+	if(curlIsUrl(filename, &ciu))
 	{
-		gzFilePointer = gzopen(options->filename, PG_BINARY_R);
-		if (gzFilePointer == NULL)
+		pCfr = curlFetch(filename, options->pHttpPostVars, &ciu);
+		openError = (pCfr == NULL);
+		if(!openError)
+			// replace the url with the on box filename of the file that we just
+			// downloaded so that the existing file handlers can just use a file
+			filename = pCfr->pFileName;
+	}
+
+	if(!openError)
+	{
+		gzipFile = GzipFilename(filename);
+		hdfsBlock = HdfsBlockName(filename);
+
+		if (gzipFile || hdfsBlock)
 		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for reading: %m",
-								   options->filename)));
+			gzFilePointer = gzopen(filename, PG_BINARY_R);
+			openError = (gzFilePointer == NULL);
+		}
+		else
+		{
+			filePointer = AllocateFile(filename, PG_BINARY_R);
+			openError = (filePointer == NULL);
 		}
 	}
-	else
+
+	if (openError)
 	{
-		filePointer = AllocateFile(options->filename, PG_BINARY_R);
-		if (filePointer == NULL)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for reading: %m",
-								   options->filename)));
-		}
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not open file \"%s\" for reading: %m",
+							   options->filename)));
+		curlFetchFree(pCfr);
+		pCfr = NULL;
 	}
 
 	execState = (JsonFdwExecState *) palloc(sizeof(JsonFdwExecState));
@@ -407,6 +429,8 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	execState->maxErrorCount = options->maxErrorCount;
 	execState->errorCount = 0;
 	execState->currentLineNumber = 0;
+	// we pass this off to EndForeignScan to manage
+	execState->pCfr = pCfr;
 
 	scanState->fdw_state = (void *) execState;
 }
@@ -547,6 +571,8 @@ JsonEndForeignScan(ForeignScanState *scanState)
 	{
 		hash_destroy(executionState->columnMappingHash);
 	}
+
+	curlFetchFree(executionState->pCfr);
 
 	pfree(executionState);
 }
