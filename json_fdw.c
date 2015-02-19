@@ -327,6 +327,7 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 	JsonFdwOptions *options = JsonGetOptions(foreignTableId);
 
 	ExplainPropertyText("Json File", options->filename, explainState);
+	ExplainPropertyText("HTTP Post Vars", options->pHttpPostVars, explainState);
 
 	/* supress file size if we're not showing cost details */
 	if (explainState->costs)
@@ -388,7 +389,7 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	if(curlIsUrl(filename, &ciu))
 	{
 		pCfr = curlFetch(filename, options->pHttpPostVars, &ciu);
-		openError = (pCfr == NULL);
+		openError = (pCfr == NULL || !pCfr->bFileFetched);
 		if(!openError)
 			// replace the url with the on box filename of the file that we just
 			// downloaded so that the existing file handlers can just use a file
