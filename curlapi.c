@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <fcntl.h>
 
 #include <sys/types.h> // for struct dirent
 #include <sys/dir.h> // for struct dirent
@@ -86,7 +87,7 @@ static size_t curlWriteCallback(void *contents, size_t size, size_t nmemb, void 
 	return fwrite(contents, size, nmemb, pCiu->diskFile);
 }
 
-// Build a unique string
+// Help build a unique string
 static char *MD5_Ascii(unsigned char *md, char *dst)
 {	static const char hex[]="0123456789abcdef";
 	int i;
@@ -101,7 +102,40 @@ static char *MD5_Ascii(unsigned char *md, char *dst)
 	return dst;
 }
 
+// Build a unique string
+static char *curlSessionUnique(void)
+{	char *pStr = NULL;
+	MD5_CTX md5ctx;
+	unsigned char md5digest[MD5_DIGEST_LENGTH];
+	char md5ascii[(MD5_DIGEST_LENGTH*2)+10];
+
+	memset(&md5ctx, 0, sizeof(md5ctx));
+	memset(&md5digest, 0, sizeof(md5digest));
+	memset(&md5ascii, 0, sizeof(md5ascii));
+
+	// use our thread id and time in epoch form as our uniqueness
+	asprintf(&pStr,"%04X0x%lX", (unsigned int)pthread_self(), (unsigned long)time(NULL));
+
+	// hash it
+	if(pStr != NULL)
+	{
+		MD5_Init(&md5ctx);
+		MD5_Update(&md5ctx, (const unsigned char *)pStr, strlen(pStr));
+		MD5_Final(md5digest, &md5ctx);
+		MD5_Ascii(md5digest, md5ascii);
+		free(pStr);
+	}
+
+	if(strlen(md5ascii))
+		pStr = strdup(md5ascii);
+
+	return pStr;
+}
+
 // Test if filename is a CURL supported URL and setup the ciu_t if it is
+// If the URL specifies a filename, try to use that on disk, so that the
+// native file handlers can guess the file type, and act accordingly,
+// otherwise, just create a tempoary filename.
 int curlIsUrl(const char *pFname, ciu_t *pCiu)
 {	int isCurlUrl = 0;
 	regexapi_t *pRat = regexapi_exec_list(pFname, &regexUrls[0]);
@@ -112,23 +146,64 @@ int curlIsUrl(const char *pFname, ciu_t *pCiu)
 	// If we found a regex match, then we assume that CURL supports the url
 	if(pRat != NULL)
 	{
-		char tmpfnamebuf[MAXFILENAME];
+		// Assume that the last subcomponent of the regex is the filename portion
+		// and get the basename of that to use as the on disk filename
+		char *pBaseName = strrchr(regexapi_sub(pRat, 0, regexapi_nsubs(pRat, 0) - 1), '/');
 
-		memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
-		sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
-
-		if(mkstemp(tmpfnamebuf) != -1)
+		if(pBaseName != NULL && *pBaseName)
 		{
-			pCiu->diskFileName = strdup(tmpfnamebuf);
-			pCiu->bNeedUnlink = true;
-		}
-		// Open the file for writing
-		pCiu->diskFile = (pCiu->diskFileName != NULL ? fopen(pCiu->diskFileName, "w") : NULL);
-		// Unlink it, only if it was marked as tempoary and we did open the file
-		pCiu->bNeedUnlink &= (pCiu->diskFile != NULL);
+			// The string returned to us is not const, so we'll terminate it
+			// at the URI point, so as to not have silly on disk filenames
+			char *pTerm = strchr(pBaseName, '?');
+			int fd = -1;
 
-		// If we succeeded in opening a file, the this is a CURL URL
-		isCurlUrl = (pCiu->diskFile != NULL);
+			if(pTerm != NULL)
+				*pTerm = 0;
+
+			if(*pBaseName == '/')
+				pBaseName++;
+
+			if(!*pBaseName) // the URL didn't specify a file, build a temp filename
+			{
+				char tmpfnamebuf[MAXFILENAME];
+
+				memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
+				sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
+
+				if((fd = mkstemp(tmpfnamebuf)) != -1)
+				{
+					pCiu->diskFileName = strdup(tmpfnamebuf);
+					pCiu->bNeedUnlink = true;
+				}
+			}
+			else	// Use the specified filename from the URL
+			{	char *pUnique = curlSessionUnique();
+
+				// but add a source of uniqueness, so we don't
+				// possibly trample the filename of another session
+				if(pUnique != NULL)
+				{
+					asprintf(&pCiu->diskFileName, "%s/%s.%s", CURL_BASE_DIR, pUnique, pBaseName);
+					free(pUnique);
+				}
+				else // fall back
+					asprintf(&pCiu->diskFileName, "%s/%s", CURL_BASE_DIR, pBaseName);
+
+				// create the file for exclusive access
+				if((fd = open(pCiu->diskFileName, O_WRONLY|O_CREAT|O_EXCL, 0600)) != -1)
+					pCiu->bNeedUnlink = true;
+			}
+
+			// Get a FILE pointer
+			pCiu->diskFile = (fd != -1 ? fdopen(fd, "w") : NULL);
+			// Flag to Unlink, if we did open the file
+			pCiu->bNeedUnlink &= (pCiu->diskFile != NULL);
+
+			// If we succeeded in opening a file, then this is a CURL URL
+			isCurlUrl = (pCiu->diskFile != NULL);
+		}
+		else
+			isCurlUrl = 0;	// Because we are here, suffix validation failed
 
 		// Cleanup the regex
 		regexapi_free(pRat);
@@ -214,9 +289,6 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 		// the file should already be open, get it
 		res = curl_easy_perform(curl_handle);
 
-		// all done, cleanup
-		curl_global_cleanup();
-
 		// clean up post data
 		if(pPostStr != NULL)
 			free(pPostStr);
@@ -261,7 +333,9 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 				);
 		}
 
+		// all done, cleanup
 		curl_easy_cleanup(curl_handle);
+		curl_global_cleanup();
 	}
 
 	return pCfr;
@@ -272,15 +346,28 @@ int main(int argc, char **argv)
 {
 	ciu_t ciu;
 	cfr_t *pCfr = NULL;
-	const char *pUrl = (argc >= 2 ? argv[1] : NULL);
-	const char *pHttpPostVars = (argc >= 3 ? argv[2] : NULL);
+	const char *pUrl = NULL;
+	const char *pHttpPostVars = NULL;
 	const char *pFileName = NULL;
+	int debug = 0;
+	int i = 2;
 
 	if(argc == 1)
 	{
-		printf("%s: [url] [optional post vars]\n", argv[0]);
+		printf("%s: [-d] [url] [optional post vars]\n", argv[0]);
 		exit(0);
 	}
+
+	if(argc >= i && *argv[i-1] == '-')
+	{
+		if(argv[i-1][1] == 'd')
+			debug = 1;
+		i++;
+	}
+
+	pUrl = (argc >= i ? argv[i-1] : NULL);
+	i++;
+	pHttpPostVars = (argc >= i ? argv[i-1] : NULL);
 
 	if(curlIsUrl(pUrl, &ciu))
 	{
@@ -293,16 +380,18 @@ int main(int argc, char **argv)
 	if(pCfr && pCfr->bFileFetched)
 	{	char *pCmd = NULL;
 
-		//asprintf(&pCmd, "ls -la /tmp/; cat %s", pFileName);
-		asprintf(&pCmd, "cat %s", pFileName);
+		if(debug)
+			asprintf(&pCmd, "ls -la /tmp/; cat %s", pFileName);
+		else
+			asprintf(&pCmd, "cat %s", pFileName);
 		system(pCmd);
 		free(pCmd);
 	}
 
 	curlFetchFree(pCfr);
 
-	//if(pCfr && pCfr->bFileFetched)
-	//	system("ls -la /tmp/");
+	if(debug && pCfr && pCfr->bFileFetched)
+		system("ls -la /tmp/");
 
 	return 0;
 }
