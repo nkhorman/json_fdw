@@ -11,7 +11,7 @@ files. Future releases of this wrapper will use the JSON parser functions that
 are to going to be introduced in the PostgreSQL 9.3 release.
 
 This version of json\_fdw has been extended to be able to pull files from http
-servers, cache them locally for the duration of the operation, and then delete
+servers, stage them locally for the duration of the operation, and then delete
 afterwards. It depends on libcurl from http://curl.haxx.se/libcurl/ . A future
 TODO will use the ETAG mechanism to do long term local caching of the remote
 content.
@@ -171,7 +171,7 @@ The following example shows how to fetch remote files, that are staged locally
 for the duration of the query, and then deleted. (Yes, all fetches are presently
 treated as an ephemeral operation. Note the TODO at the top)
 
-The exiting handling of Gzip files is supported, because, after the file is fetched, it
+The existing handling of Gzip files is supported, because, after the file is fetched, it
 is handed off to the existing file handling code, as if it were previously staged on disk.
 
 Notes based on how libcurl is built;
