@@ -15,7 +15,7 @@ servers, cache them locally for the duration of the operation, and then delete
 afterwards. It depends on libcurl from http://curl.haxx.se/libcurl/ . A future
 TODO will use the ETAG mechanism to do long term local caching of the remote
 content.
-Also, this, and the original version, both are compatible with PostgreSQL 9.
+Also, this, and the original version, both are compatible with PostgreSQL 9.4
 release.
 
 
