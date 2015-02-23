@@ -165,6 +165,46 @@ documentation page at [http://citusdata.com/docs/foreign-data](http://citusdata.
 , or contact us at engage @ citusdata.com.
 
 
+Fetching Remote Files
+---------------------
+The following example shows how to fetch remote files, that are staged locally
+for the duration of the query, and then deleted. (Yes, all fetches are presently
+treated as an ephemeral operation. Note the TODO at the top)
+
+The exiting handling of Gzip files is supported, because, after the file is fetched, it
+is handed off to the existing file handling code, as if it were previously staged on disk.
+
+Notes based on how libcurl is built;
+1. Both Content Encoding and Transport Encoding are supported.
+2. Https should be supported, but has not been tested.
+
+Only curl-7.40.0 has been tested.
+
+    -- create foreign table - using optional get parameters
+    CREATE FOREIGN TABLE an_example_table
+    (
+        fieldName1 TEXT,
+        fieldName2 INTEGER,
+        . .,
+        . .,
+        . .
+    )
+    SERVER json_server
+    OPTIONS (filename 'http://www.example.com/file/location/url/some.json.gz?optional=paramaters&separated=traditionally');
+
+    -- create foreign table - using optional post and get parameters
+    CREATE FOREIGN TABLE another_example_table
+    (
+        fieldName1 TEXT,
+        fieldName2 INTEGER,
+        . .,
+        . .,
+        . .
+    )
+    SERVER json_server
+    OPTIONS (filename 'http://www.example.com/file/location/url/some.json.gz?optional=paramaters&separated=traditionally', http_post_vars 'another=parameter_set&separated=traditionally&donot=pre-encode_them');
+
+
 Limitations
 -----------
 
