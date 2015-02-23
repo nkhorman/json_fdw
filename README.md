@@ -10,12 +10,24 @@ json\_fdw currently only works with PostgreSQL 9.2, and uses YAJL to parse JSON
 files. Future releases of this wrapper will use the JSON parser functions that
 are to going to be introduced in the PostgreSQL 9.3 release.
 
+This version of json\_fdw has been extended to be able to pull files from http
+servers, cache them locally for the duration of the operation, and then delete
+afterwards. It depends on libcurl from http://curl.haxx.se/libcurl/ . A future
+TODO will use the ETAG mechanism to do long term local caching of the remote
+content.
+Also, this, and the original version, both are compatible with PostgreSQL 9.
+release.
+
 
 Building
 --------
 
 json\_fdw depends on yajl-2.0 for parsing, and zlib-devel to read compressed
-files. So we need to install these packages first:
+files, and libcurl to fetch files from http servers.
+So we need to install these packages first:
+
+NB. The following intructions have not been updated to reflect the libcurl dependancy
+You'll need to adjust accordingly.
 
     ## Fedora 17+
     sudo yum install zlib-devel yajl-devel
