@@ -26,9 +26,11 @@
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+#include <stdarg.h>
 
 #include <sys/types.h> // for struct dirent
 #include <sys/dir.h> // for struct dirent
+#include <sys/stat.h> // for mkdir
 #include <openssl/md5.h> // for MD5_xxx foo
 #include <pthread.h> // for pthread_self()
 
@@ -37,9 +39,126 @@
 #include "regexapi.h"
 
 // Where files are downloaded to
-#define CURL_BASE_DIR "/tmp"
+#define CURL_BASE_DIR "/tmp/json_fdw_cache"
 // Maximum length of on disk tempoarary file names
 #define MAXFILENAME 1024
+
+#define FREEPTR(a) do { if((a) != NULL) { free((a)); (a) = NULL; }; } while(0)
+
+#ifdef DEBUG_WLOGIT
+void (*gcurlLogFn)(const char *) = NULL;
+
+void curlLogItSet(void (*pfn)(const char *))
+{
+	gcurlLogFn = pfn;
+}
+
+static void curlLogIt(const char *pFmt, ...)
+{
+	if(gcurlLogFn != NULL)
+	{	va_list vl;
+		char *pStr = NULL;
+
+		va_start(vl, pFmt);
+		asprintf(&pStr, pFmt, vl);
+		va_end(vl);
+
+		if(pStr != NULL)
+		{
+			gcurlLogFn(pStr);
+			free(pStr);
+		}
+	}
+}
+#endif
+
+static const char *hexDigits = "0123456789ABCDEF";
+
+// An MD5 object
+typedef struct _cmd5_t
+{
+	MD5_CTX ctx;
+	unsigned char digest[MD5_DIGEST_LENGTH];
+	char ascii[(MD5_DIGEST_LENGTH*2)+1];
+}cmd5_t; // Curl MD5 Type
+
+// Alloc and Init MD5 object
+static cmd5_t *curlMd5Init(void)
+{	cmd5_t *pMd5 = calloc(1, sizeof(cmd5_t));
+
+	if(pMd5 != NULL)
+		MD5_Init(&pMd5->ctx);
+
+	return pMd5;
+}
+
+// Free an MD5 object
+static void curlMd5Free(cmd5_t *pMd5)
+{
+	if(pMd5 != NULL)
+		free(pMd5);
+}
+
+static void curlMd5Hash(cmd5_t *pMd5, const char *pStr)
+{
+	MD5_Update(&pMd5->ctx, (const unsigned char *)pStr, strlen(pStr));
+}
+
+// Finalize the MD5 object, and build an ASCII string
+// of the digest, then strdup it
+static char *curlMd5Final(cmd5_t *pMd5)
+{	int i;
+
+	MD5_Final(pMd5->digest, &pMd5->ctx);
+
+	// Convert MD5 digest into ASCII string
+	for (i = 0; i < MD5_DIGEST_LENGTH; i++)
+	{
+		pMd5->ascii[i+i] = hexDigits[pMd5->digest[i] >> 4];
+		pMd5->ascii[i+i+1] = hexDigits[pMd5->digest[i] & 0x0f];
+	}
+
+	return strdup(pMd5->ascii);
+}
+
+/*
+// Create an MD5 hash vprintf style
+// The caller must free the resultant string pointer
+static char *curlAsciiMd5HashV(const char *pFmt, va_list vl)
+{	char *pHashStr = NULL;
+	char *pSrc = NULL;
+
+	vasprintf(&pSrc, pFmt, vl);
+
+	// hash it
+	if(pSrc != NULL)
+	{	cmd5_t *pMd5 = curlMd5Init();
+
+		if(pMd5 != NULL)
+		{
+			curlMd5Hash(pMd5, pSrc);
+			pHashStr = curlMd5Final(pMd5);
+			curlMd5Free(pMd5);
+		}
+		free(pSrc);
+	}
+
+	return pHashStr;
+}
+
+// Create an MD5 hash printf style
+// The caller must free the resultant string pointer
+static char *curlAsciiMd5Hash(const char *pFmt, ...)
+{	va_list vl;
+	char *pStr = NULL;
+
+	va_start(vl, pFmt);
+	pStr = curlAsciiMd5HashV(pFmt, vl);
+	va_end(vl);
+
+	return pStr;
+}
+*/
 
 // URL validation support
 typedef struct _regexapilist_t
@@ -77,148 +196,164 @@ static regexapi_t *regexapi_exec_list(const char *subject, regexapilist_t const 
 	return pRat;
 }
 
-// This closes the the file that was just made
-static void ciuClose(ciu_t *pCiu)
-{
-	if(pCiu->diskFile != NULL)
-	{
-		fflush(pCiu->diskFile);
-		fclose(pCiu->diskFile);
-		pCiu->diskFile = NULL;
-	}
-}
-
 // Callback from CURL to write contents to disk
 static size_t curlWriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
-{	ciu_t *pCiu = (ciu_t *)userp;
+{	ccf_t *pCcf = (ccf_t *)userp;
 
-	return fwrite(contents, size, nmemb, pCiu->diskFile);
+	return fwrite(contents, size, nmemb, pCcf->pFile);
 }
 
-// Help build a unique string
-static char *MD5_Ascii(unsigned char *md, char *dst)
-{	static const char hex[]="0123456789abcdef";
-	int i;
+// If pHdr matches the first of pSrc, then duplicate the balance of the header
+// The caller must free the result
+static char *curlHeaderCallbackMatch(const char *pSrc, size_t srcLen, const char *pHdr)
+{	char *pDst = NULL;
+	size_t hdrLen = strlen(pHdr);
 
-	for (i = 0; i < MD5_DIGEST_LENGTH; i++)
-	{
-		dst[i+i] = hex[md[i] >> 4];
-		dst[i+i+1] = hex[md[i] & 0x0f];
-	}
-	dst[i+i] = '\0';
+	// capture the etag header value
+	if(srcLen > hdrLen && strncasecmp(pSrc, pHdr, hdrLen) == 0)
+	{	const char *pl = pSrc + hdrLen;
+		const char *pr = pSrc + srcLen - 1;
 
-	return dst;
-}
+		// left trim
+		while(*pl == ' ' || *pl == '\t')
+			pl++;
+		// right trim
+		while(*pl == ' ' || *pl == '\t' || *pr == '\n' || *pr == '\r')
+			pr--;
 
-// Build a unique string
-static char *curlSessionUnique(void)
-{	char *pStr = NULL;
-	MD5_CTX md5ctx;
-	unsigned char md5digest[MD5_DIGEST_LENGTH];
-	char md5ascii[(MD5_DIGEST_LENGTH*2)+10];
+		// remove lead / trailing quote pair
+		if(*pl == '"' && *pr == '"')
+			{ pl++; pr--; }
+		if(*pl == '\'' && *pr == '\'')
+			{ pl++; pr--; }
 
-	memset(&md5ctx, 0, sizeof(md5ctx));
-	memset(&md5digest, 0, sizeof(md5digest));
-	memset(&md5ascii, 0, sizeof(md5ascii));
+		if(pr>pl)
+		{	int l = pr-pl+1;
 
-	// use our thread id and time in epoch form as our uniqueness
-	asprintf(&pStr,"%04X0x%lX", (unsigned int)pthread_self(), (unsigned long)time(NULL));
-
-	// hash it
-	if(pStr != NULL)
-	{
-		MD5_Init(&md5ctx);
-		MD5_Update(&md5ctx, (const unsigned char *)pStr, strlen(pStr));
-		MD5_Final(md5digest, &md5ctx);
-		MD5_Ascii(md5digest, md5ascii);
-		free(pStr);
+			asprintf(&pDst, "%*.*s", l, l, pl);
+		}
 	}
 
-	if(strlen(md5ascii))
-		pStr = strdup(md5ascii);
-
-	return pStr;
+	return pDst;
 }
 
-// Test if filename is a CURL supported URL and setup the ciu_t if it is
-// If the URL specifies a filename, try to use that on disk, so that the
-// native file handlers can guess the file type, and act accordingly,
-// otherwise, just create a tempoary filename.
-int curlIsUrl(const char *pFname, ciu_t *pCiu)
-{	int isCurlUrl = 0;
-	regexapi_t *pRat = regexapi_exec_list(pFname, &regexUrls[0]);
+// Callback from CURL for header examination
+// Collect header values that we are interested in
+static size_t curlHeaderCallback(void *contents, size_t size, size_t nmemb, void *userp)
+{	cfr_t *pCfr = (cfr_t *)userp;
+	size_t len = size * nmemb;
 
-	// Assume that we should init the ciu
-	memset(pCiu, 0, sizeof(ciu_t));
+	if(pCfr != NULL)
+	{	char *pHdrVal = NULL;
+		ccf_t *pCcf = &pCfr->ccf;
+		int i;
+		struct hdra_t
+		{
+			const char *str;
+			size_t idx;
+		} pHdrs[] =
+		{
+			// Order in this array doesn't matter,
+			// but the number of elements in this
+			// array must be no more than HDR_COUNT
+			{HDR_STR_ETAG, HDR_IDX_ETAG},
+			{HDR_STR_LASTMODIFIED, HDR_IDX_LASTMODIFIED},
+			{HDR_STR_CACHECONTROL, HDR_IDX_CACHECONTROL}
+		};
+
+		// Search the array of header keys, find the one that matches what
+		// was just passed into us in contents, and, if not already set to
+		// non-null, store the duplicated header value
+		for(i=0; pHdrVal == NULL && i < sizeof(pHdrs)/sizeof(pHdrs[0]); i++)
+		{
+			// pHdrVal is already strdup'd for us
+			pHdrVal = curlHeaderCallbackMatch((const char *)contents, len, pHdrs[i].str);
+
+			if(pHdrVal != NULL)
+			{
+				FREEPTR(pCcf->pHdrs[pHdrs[i].idx]);
+				pCcf->pHdrs[pHdrs[i].idx] = pHdrVal;
+			}
+		}
+	}
+
+	return len;
+}
+
+// Create a temporary file possibly to write into,
+// if we receive content from the fetch operation
+// Also, figure out what filename we should use for
+// content caching purposes.
+static void curlCacheFileOpen(ccf_t *pCcf)
+{	int fd = -1;
+	char tmpfnamebuf[MAXFILENAME];
+
+	// make sure we can store our files
+	//mkdir(CURL_BASE_DIR, 0700);
+
+	// create a temporary file, for a possible use later
+	memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
+	sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
+
+	if((fd = mkstemp(tmpfnamebuf)) != -1)
+	{
+		pCcf->pFileNameTmp = strdup(tmpfnamebuf);
+		pCcf->bNeedUnlink = true;
+
+		// Get a FILE pointer
+		pCcf->pFile = (fd != -1 ? fdopen(fd, "w") : NULL);
+	}
+
+	// Figure out what the on disk filename should be after the retrieval
+	if(pCcf->pUrlBaseName == NULL || !*pCcf->pUrlBaseName)
+	{
+		FREEPTR(pCcf->pUrlBaseName);
+		FREEPTR(pCcf->pFileName);
+
+		// The URL didn't specify a file, use the urlhash as the filename
+		asprintf(&pCcf->pFileName, "%s/%s", CURL_BASE_DIR, pCcf->pUrlHash);
+	}
+	else	// Use the specified basename of the filename from the URL
+		// so that file handling semantics based on filenames work
+		asprintf(&pCcf->pFileName, "%s/%s", CURL_BASE_DIR, pCcf->pUrlBaseName);
+}
+
+// Test if pUrl is a CURL supported URL
+// If so, grab the basename, for use later
+static bool curlIsUrl(const char *pUrl, ccf_t *pCcf)
+{	bool bIsUrl = false;
+	regexapi_t *pRat = regexapi_exec_list(pUrl, &regexUrls[0]);
 
 	// If we found a regex match, then we assume that CURL supports the url
 	if(pRat != NULL)
 	{	int regexNSubs = regexapi_nsubs(pRat, 0);
 		// Assume that the last subcomponent of the regex is the filename portion
 		const char *pRegexSub = (regexNSubs > 1 ? regexapi_sub(pRat, 0, regexNSubs - 1) : NULL);
-		// and get the basename of that to use as the on disk filename
+		// and get the basename of that
 		char *pBaseName = (pRegexSub != NULL ? strrchr(pRegexSub, '/') : NULL);
 
-		if(pBaseName != NULL && *pBaseName)
-		{
-			// The string returned to us is not const, so we'll terminate it
-			// at the URI point, so as to not have silly on disk filenames
-			char *pTerm = strchr(pBaseName, '?');
-			int fd = -1;
+		bIsUrl = (pBaseName != NULL && *pBaseName);
+		if(bIsUrl)
+		{	char *pTerm = strchr(pBaseName, '?');
 
+			// The string returned to us is not const, so we'll terminate it
+			// at the URI point, so as to not have silly basenames
 			if(pTerm != NULL)
 				*pTerm = 0;
 
+			// no basename, just a plain url ?
 			if(*pBaseName == '/')
 				pBaseName++;
 
-			if(!*pBaseName) // the URL didn't specify a file, build a temp filename
-			{
-				char tmpfnamebuf[MAXFILENAME];
-
-				memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
-				sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
-
-				if((fd = mkstemp(tmpfnamebuf)) != -1)
-				{
-					pCiu->diskFileName = strdup(tmpfnamebuf);
-					pCiu->bNeedUnlink = true;
-				}
-			}
-			else	// Use the specified filename from the URL
-			{	char *pUnique = curlSessionUnique();
-
-				// but add a source of uniqueness, so we don't
-				// possibly trample the filename of another session
-				if(pUnique != NULL)
-				{
-					asprintf(&pCiu->diskFileName, "%s/%s.%s", CURL_BASE_DIR, pUnique, pBaseName);
-					free(pUnique);
-				}
-				else // fall back
-					asprintf(&pCiu->diskFileName, "%s/%s", CURL_BASE_DIR, pBaseName);
-
-				// create the file for exclusive access
-				if((fd = open(pCiu->diskFileName, O_WRONLY|O_CREAT|O_EXCL, 0600)) != -1)
-					pCiu->bNeedUnlink = true;
-			}
-
-			// Get a FILE pointer
-			pCiu->diskFile = (fd != -1 ? fdopen(fd, "w") : NULL);
-			// Flag to Unlink, if we did open the file
-			pCiu->bNeedUnlink &= (pCiu->diskFile != NULL);
-
-			// If we succeeded in opening a file, then this is a CURL URL
-			isCurlUrl = (pCiu->diskFile != NULL);
+			if(*pBaseName)
+				pCcf->pUrlBaseName = strdup(pBaseName);
 		}
-		else
-			isCurlUrl = 0;	// Because we are here, suffix validation failed
 
 		// Cleanup the regex
 		regexapi_free(pRat);
 	}
 
-	return isCurlUrl;
+	return bIsUrl;
 }
 
 // Encode some html form Post data
@@ -227,8 +362,7 @@ static char *curlEncodePostData(const char *src)
 	char *str = dst;
 
 	if(src != NULL)
-	{	const char *hexDigit = "0123456789ABCDEF";
-		int eq = 0; // we assume that the first `=' is the kvp separator (ie val=data), so don't encode it.
+	{	int eq = 0; // we assume that the first `=' is the kvp separator (ie val=data), so don't encode it.
 
 		while(*src)
 		{
@@ -239,8 +373,8 @@ static char *curlEncodePostData(const char *src)
 				eq += (*src == '=');
 
 				*(dst++) = '%';
-				*(dst++) = hexDigit [(c&0xf0)>>4];
-				*(dst++) = hexDigit [(c&0x0f)];
+				*(dst++) = hexDigits[c >> 4];
+				*(dst++) = hexDigits[c & 0x0f];
 			}
 			else if(*src == ' ')
 				*(dst++) = '+';
@@ -253,38 +387,217 @@ static char *curlEncodePostData(const char *src)
 	return str;
 }
 
-// Free the Fetch result structure
-void curlFetchFree(cfr_t *pCfr)
+static void curlCfrClose(cfr_t *pCfr)
 {
 	if(pCfr != NULL)
 	{
-		if(pCfr->pFileName != NULL)
+		if(pCfr->ccf.pFile != NULL)
 		{
-			if(pCfr->bNeedUnlink)
-				unlink(pCfr->pFileName);
-			free(pCfr->pFileName);
+			fflush(pCfr->ccf.pFile);
+			fclose(pCfr->ccf.pFile);
+			pCfr->ccf.pFile = NULL;
 		}
+	}
+}
+
+// Free the structure and sub-components
+void curlCfrFree(cfr_t *pCfr)
+{
+	if(pCfr != NULL)
+	{	int i;
+
+		curlCfrClose(pCfr);
+
+		if(pCfr->ccf.pFileNameTmp != NULL)
+		{
+			if(pCfr->ccf.bNeedUnlink)
+				unlink(pCfr->ccf.pFileNameTmp);
+		}
+
+		FREEPTR(pCfr->ccf.pUrlBaseName);
+		FREEPTR(pCfr->ccf.pFileName);
+		FREEPTR(pCfr->ccf.pUrlHash);
+		FREEPTR(pCfr->ccf.pFileNameTmp);
+
+		for(i=0; i<HDR_COUNT; i++)
+			FREEPTR(pCfr->ccf.pHdrs[i]);
+
+		FREEPTR(pCfr->pContentType);
 
 		free(pCfr);
 	}
 }
 
-// Fetch the file from the url
-cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
-{	cfr_t *pCfr = calloc(1,sizeof(cfr_t));
+// Build an md5 hash for the URL being requested
+// The caller must free the result
+static char *curlUrlHash(const char *pUrl, const char *pHttpPostVars)
+{	cmd5_t * pMd5 = curlMd5Init();
+	char *pUrlHash = NULL;
 
+	curlMd5Hash(pMd5, pUrl);
+	curlMd5Hash(pMd5, pHttpPostVars);
+	pUrlHash = curlMd5Final(pMd5);
+	curlMd5Free(pMd5);
+
+	return pUrlHash;
+}
+
+/*
+static ccf_t *curlCacheMetaSet(const char *pFileName
+	, const char *pEtag
+	, const char *pLastModified
+	, const char *pCacheControl
+	)
+{	ccf_t *pCcf = calloc(1, sizeof(ccf_t));
+
+	if(pCcf != NULL)
+	{
+		pCcf->pFileName = strdup(pFileName);
+		pCcf->pHdrs[HDR_IDX_ETAG] = strdup(pEtag);
+		pCcf->pHdrs[HDR_IDX_LASTMODIFIED] = strdup(pLastModified);
+		pCcf->pHdrs[HDR_IDX_CACHECONTROL] = strdup(pCacheControl);
+	}
+
+	return pCcf;
+}
+*/
+
+static char *stradvtok(char **ppSrc, char delim)
+{
+	char *dst = *ppSrc;
+	char *src = *ppSrc;
+
+	while(src != NULL && *src && *src != delim)
+	{
+		if(dst == src && *src != delim && (*src == ' ' || *src == '\t' || *src == '\r' || *src == '\n'))
+			dst++;
+		src++;
+	}
+
+	if(*src == delim)
+	{
+		*src = '\0';
+		src++;
+		while(*src == ' ' || *src == '\t' || *src == '\r' || *src == '\n')
+			src++;
+	}
+
+	*ppSrc = src;
+
+	return dst;
+}
+
+
+static void curlCacheMetaGet(ccf_t *pCcf)
+{	char *pFname = NULL;
+
+	asprintf(&pFname, "%s/%s.meta", CURL_BASE_DIR, pCcf->pUrlHash);
+	if(pFname != NULL)
+	{	FILE *fin = fopen(pFname, "r");
+
+		if(fin != NULL)
+		{	char buf[4096];
+			char *p1;
+			char *p2;
+			char *p3;
+			char *p4;
+			char *pbuf;
+
+			memset(buf, 0, sizeof(buf));
+			pbuf = fgets(buf, sizeof(buf)-1, fin);
+
+			if(pbuf != NULL)
+			{
+				p1 = stradvtok(&pbuf, '|');
+				p2 = stradvtok(&pbuf, '|');
+				p3 = stradvtok(&pbuf, '|');
+				p4 = stradvtok(&pbuf, '|');
+
+				pCcf->pFileName = strdup(p1);
+				pCcf->pHdrs[HDR_IDX_ETAG] = strdup(p2);
+				pCcf->pHdrs[HDR_IDX_LASTMODIFIED] = strdup(p3);
+				pCcf->pHdrs[HDR_IDX_CACHECONTROL] = strdup(p4);
+			}
+
+			fclose(fin);
+		}
+
+		free(pFname);
+	}
+}
+
+#define NOTNULLPTR(a) ((a) != NULL ? (a) : "")
+
+static void curlCacheMetaPut(ccf_t *pCcf)
+{	char *pFname = NULL;
+
+	asprintf(&pFname, "%s/%s.meta", CURL_BASE_DIR, pCcf->pUrlHash);
+
+	// TODO - lock operation to prevent contention races
+	if(pFname != NULL)
+	{	FILE *fout = fopen(pFname, "w");
+
+		if(fout != NULL)
+		{
+			fprintf(fout,"%s|%s|%s|%s|"
+				, NOTNULLPTR(pCcf->pFileName)
+				, NOTNULLPTR(pCcf->pHdrs[HDR_IDX_ETAG])
+				, NOTNULLPTR(pCcf->pHdrs[HDR_IDX_LASTMODIFIED])
+				, NOTNULLPTR(pCcf->pHdrs[HDR_IDX_CACHECONTROL])
+				);
+			fclose(fout);
+		}
+		free(pFname);
+	}
+}
+
+// Move the temp file to the cached file ?
+static void curlCacheFileFinalize(cfr_t *pCfr)
+{
 	if(pCfr != NULL)
 	{
+		// TODO;
+		// 	1. set unlink flag based on cache-control
+		switch(pCfr->httpResponseCode)
+		{
+			case 200: // new content, remove old, use new
+				// TODO - lock operation to prevent contention races
+				unlink(pCfr->ccf.pFileName);
+				rename(pCfr->ccf.pFileNameTmp, pCfr->ccf.pFileName);
+				pCfr->ccf.bNeedUnlink = false;
+				break;
+			case 304:	// no new content, remove temp file
+			default:
+				unlink(pCfr->ccf.pFileNameTmp);
+				break;
+		}
+	}
+}
+
+// Fetch the file from the url
+cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
+{	cfr_t *pCfr = calloc(1,sizeof(cfr_t));
+
+	if(!curlIsUrl(pUrl, &pCfr->ccf))
+		FREEPTR(pCfr);
+
+	if(pCfr != NULL)
+	{	struct curl_slist *chunk = NULL;
+
 		CURLcode res;
 		CURL *curl_handle = NULL;
 		char *pPostStr = curlEncodePostData(pHttpPostVars);
+
+		pCfr->ccf.pUrlHash = curlUrlHash(pUrl, pHttpPostVars);
+		curlCacheMetaGet(&pCfr->ccf);
+		curlCacheFileOpen(&pCfr->ccf);
 
 		curl_global_init(CURL_GLOBAL_ALL);
 		curl_handle = curl_easy_init();
 		curl_easy_setopt(curl_handle, CURLOPT_URL, pUrl);
 
 		curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curlWriteCallback);
-		curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)pCiu);
+		curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&pCfr->ccf);
 		curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0"); // TODO - table option ?
 		curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30); // TODO - table option ?
 
@@ -295,6 +608,9 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 		curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 5); // for a maximum of 5
 		curl_easy_setopt(curl_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL); // maintain a post as a post on redirects
 		curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn one Refer when redirecting
+
+		curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, (void *)&pCfr->ccf);
+		curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
 
 		// TODO - auth foo - possibly some or all of these
 		//	CURLOPT_USERPWD or (CURLOPT_USERNAME and CURLOPT_PASSWORD)
@@ -314,6 +630,18 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 			curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, strlen(pPostStr));
 		}
 
+		// inject etag header request
+		// TODO;
+		//	1. don't if the actual file is missing, so that we get a new one
+		// 	2. if stale acording to cache-control
+		if(pCfr->ccf.pHdrs[HDR_IDX_ETAG] != NULL)
+		{	char *pHdr = NULL;
+
+			asprintf(&pHdr, "If-None-Match: \"%s\"", pCfr->ccf.pHdrs[HDR_IDX_ETAG]);
+			chunk = curl_slist_append(chunk, pHdr);
+			curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, chunk);
+		}
+
 		// the file should already be open, get it
 		res = curl_easy_perform(curl_handle);
 
@@ -321,55 +649,63 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 		if(pPostStr != NULL)
 			free(pPostStr);
 
-		// give the filename allocated in Ciu to Cfr, it will free it later
-		pCfr->pFileName = pCiu->diskFileName;
-		// take note if we need to clean up the file later
-		pCfr->bNeedUnlink = pCiu->bNeedUnlink;
-
-		// clean up
-		ciuClose(pCiu);
+		// close the open file
+		curlCfrClose(pCfr);
 
 		// this means that we communicated with the server
 		if(res == CURLE_OK)
-		{	unsigned long httpResponseCode = 0;
-			char *pContentType = NULL;
+		{	char *pContentType = NULL;
 
-			curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &httpResponseCode);
+			curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &pCfr->httpResponseCode);
 			curl_easy_getinfo(curl_handle, CURLINFO_CONTENT_TYPE, &pContentType);
 
-			// validattion
-			pCfr->bFileFetched = (
-				// retrived the file
-				httpResponseCode == 200
-				// make sure it's the correct content type
+			if(pContentType != NULL)
+				pCfr->pContentType = strdup(pContentType);
+
+			curlCacheMetaPut(&pCfr->ccf);
+
+			switch(pCfr->httpResponseCode)
+			{
+				case 200:
+					pCfr->bFileFetched = true;
 #ifndef JSON_CONTENT_TYPE_NONE
-				&&
-					(
+					// make sure it's the correct content type
+					pCfr->bFileFetched &= (
 #ifdef JSON_CONTENT_TYPE_NULL
-					// Highly non-conforming server/application
-					pContentType == NULL ||
+						// Highly non-conforming server/application
+						pContentType == NULL ||
 #endif
 #ifdef JSON_CONTENT_TYPE_LIBERAL
-					// If your using a badly configured/coded/non-conforming server
-					// application, you might get one or more of these mime types
-					(pContentType != NULL && strcasecmp("application/x-javascript", pContentType) == 0) ||
-					(pContentType != NULL && strcasecmp("text/javascript", pContentType) == 0) ||
-					(pContentType != NULL && strcasecmp("text/x-javascript", pContentType) == 0) ||
-					(pContentType != NULL && strcasecmp("text/x-json", pContentType) == 0) ||
-					(pContentType != NULL && strcasecmp("text/html", pContentType) == 0) ||
+						// If your using a badly configured/coded/non-conforming server
+						// application, you might get one or more of these mime types
+						(pContentType != NULL && strcasecmp("application/x-javascript", pContentType) == 0) ||
+						(pContentType != NULL && strcasecmp("text/javascript", pContentType) == 0) ||
+						(pContentType != NULL && strcasecmp("text/x-javascript", pContentType) == 0) ||
+						(pContentType != NULL && strcasecmp("text/x-json", pContentType) == 0) ||
+						(pContentType != NULL && strcasecmp("text/html", pContentType) == 0) ||
 #endif
-					// The content might be a straight up gzip compressed file
-					(pContentType != NULL && strcasecmp("application/x-gzip", pContentType) == 0) ||
-					// If it is uncompressed, it should look like this
-					(pContentType != NULL && strcasecmp("application/json", pContentType) == 0)
-					)
+						// The content might be a straight up gzip compressed file
+						(pContentType != NULL && strcasecmp("application/x-gzip", pContentType) == 0) ||
+						// If it is uncompressed, it should look like this
+						(pContentType != NULL && strcasecmp("application/json", pContentType) == 0)
+						);
 #endif
-				);
+					break;
+				case 304:
+					// we lie here, because we already have the file
+					pCfr->bFileFetched = true;
+					break;
+				default:
+					break;
+			}
+
+			curlCacheFileFinalize(pCfr);
 		}
 
 		// all done, cleanup
 		curl_easy_cleanup(curl_handle);
 		curl_global_cleanup();
+		curl_slist_free_all(chunk);
 	}
 
 	return pCfr;
@@ -378,8 +714,8 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu)
 #ifdef _CURL_UNIT_TEST
 int main(int argc, char **argv)
 {
-	ciu_t ciu;
 	cfr_t *pCfr = NULL;
+	char *pUrlBaseName = NULL;
 	const char *pUrl = NULL;
 	const char *pHttpPostVars = NULL;
 	const char *pFileName = NULL;
@@ -403,11 +739,13 @@ int main(int argc, char **argv)
 	i++;
 	pHttpPostVars = (argc >= i ? argv[i-1] : NULL);
 
-	if(curlIsUrl(pUrl, &ciu))
+	pUrlBasename = curlUrlBasename(pUrl);
+	if(pUrlBasename != NULL)
 	{
-		pCfr = curlFetch(pUrl, pHttpPostVars, &ciu);
+		pCfr = curlFetch(pUrl, pHttpPostVars, pUrlBasename);
 		if(pCfr != NULL)
 			pFileName = pCfr->pFileName;
+		free(pUrlBasename);
 	}
 
 	printf("'%s' --> '%s' == %s\n", pUrl, pFileName, (pCfr && pCfr->bFileFetched ? "OK" : "FAIL"));

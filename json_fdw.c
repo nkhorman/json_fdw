@@ -343,6 +343,14 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 	}
 }
 
+#ifdef DEBUG_WLOGIT
+static void logIt(const char *pStr)
+{
+	if(pStr != NULL)
+		ereport(DEBUG1, (errmsg("%s", pStr)));
+}
+#endif
+
 /*
  * JsonBeginForeignScan opens the underlying json file for reading. The function
  * also creates a hash table that maps referenced column names to column index
@@ -364,7 +372,6 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	gzFile gzFilePointer = NULL;
 	bool openError = false;
 	const char *filename = NULL;
-	ciu_t ciu;
 	cfr_t *pCfr = NULL;
 
 	/* if Explain with no Analyze, do nothing */
@@ -386,15 +393,16 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 
 	// See if this is an off box url, and try to fetch it
 	// and then pass it off to one of the native file handlers
-	if(curlIsUrl(filename, &ciu))
-	{
-		pCfr = curlFetch(filename, options->pHttpPostVars, &ciu);
-		openError = (pCfr == NULL || !pCfr->bFileFetched);
-		if(!openError)
-			// replace the url with the on box filename of the file that we just
-			// downloaded so that the existing file handlers can just use a file
-			filename = pCfr->pFileName;
-	}
+#ifdef DEBUG_WLOGIT
+	curlLogItSet(&logIt);
+#endif
+	pCfr = curlFetch(filename, options->pHttpPostVars);
+	openError = (pCfr == NULL || !pCfr->bFileFetched);
+	if(!openError)
+		// replace the url with the on box filename of the file that we just
+		// downloaded so that the existing file handlers can just use a file
+		filename = pCfr->ccf.pFileName;
+	ereport(DEBUG1, (errmsg("%s:%s:%u fetched %u", __FILE__, __func__, __LINE__, pCfr->bFileFetched)));
 
 	if(!openError)
 	{
@@ -418,7 +426,7 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not open file \"%s\" for reading: %m",
 							   options->filename)));
-		curlFetchFree(pCfr);
+		curlCfrFree(pCfr);
 		pCfr = NULL;
 	}
 
@@ -573,7 +581,7 @@ JsonEndForeignScan(ForeignScanState *scanState)
 		hash_destroy(executionState->columnMappingHash);
 	}
 
-	curlFetchFree(executionState->pCfr);
+	curlCfrFree(executionState->pCfr);
 
 	pfree(executionState);
 }
@@ -1157,6 +1165,7 @@ ValidDateTimeFormat(const char *dateTimeString)
 	int parseError = ParseDateTime(dateTimeString, workBuffer, sizeof(workBuffer),
 								   fieldArray, fieldTypeArray, MAXDATEFIELDS, 
 								   &fieldCount);
+
 	if (parseError == 0)
 	{
 		int dateType = 0;
@@ -1178,8 +1187,20 @@ ValidDateTimeFormat(const char *dateTimeString)
 			{
 				validDateTimeFormat = true;
 			}
+#ifdef DEBUG
+			else
+				ereport(DEBUG1, (errmsg("%s:%s:%u invlalid format", __FILE__, __func__, __LINE__)));
+#endif
 		}
+#ifdef DEBUG
+		else
+			ereport(DEBUG1, (errmsg("%s:%s:%u decode error", __FILE__, __func__, __LINE__)));
+#endif
 	}
+#ifdef DEBUG
+	else
+		ereport(DEBUG1, (errmsg("%s:%s:%u parse error", __FILE__, __func__, __LINE__)));
+#endif
 
 	return validDateTimeFormat;
 }

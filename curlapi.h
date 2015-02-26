@@ -29,22 +29,43 @@
 #include <unistd.h>
 #include <stdbool.h>
 
-typedef struct _ciu_t
-{
-	char *diskFileName;
-	FILE* diskFile;
-	bool bNeedUnlink;
-} ciu_t; // "CurlIsUrl_Type"
+// HDR_IDX_xx values must be zero relative, and consecutive
+#define HDR_IDX_ETAG 0
+#define HDR_STR_ETAG "ETag: "
 
-typedef struct _cf_t
+#define HDR_STR_LASTMODIFIED "Last-Modified: "
+#define HDR_IDX_LASTMODIFIED 1
+
+#define HDR_STR_CACHECONTROL "Cache-Control: "
+#define HDR_IDX_CACHECONTROL 2
+
+// This must be one more than the last HDR_IDX_xx value
+#define HDR_COUNT 3
+
+typedef struct _ccf_t
 {
+	char *pUrlBaseName;
 	char *pFileName;
+	char *pUrlHash;
+	char *pFileNameTmp;
+	FILE* pFile;
 	bool bNeedUnlink;
+	char *pHdrs[HDR_COUNT];
+}ccf_t; // CurlCacheFile_Type
+
+typedef struct _cfr_t
+{
+	ccf_t ccf;
 	bool bFileFetched;
+	unsigned long httpResponseCode;
+	char *pContentType;
 } cfr_t; // "CurlFetchResult_Type"
 
-int curlIsUrl(const char *pFname, ciu_t *pCcs);
-cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars, ciu_t *pCiu);
-void curlFetchFree(cfr_t *pCfs);
+cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars);
+void curlCfrFree(cfr_t *pCfr);
+
+#ifdef DEBUG_WLOGIT
+void curlLogItSet(void (*pfn)(const char *));
+#endif
 
 #endif
