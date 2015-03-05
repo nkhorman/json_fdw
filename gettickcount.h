@@ -1,3 +1,4 @@
+
 /*--------------------------------------------------------------------*
  *
  * Developed by;
@@ -21,53 +22,21 @@
  *
  *--------------------------------------------------------------------*/
 
-#ifndef _CURLAPI_H_
-#define _CURLAPI_H_
+#ifndef _GETTICKCOUNT_H_
+#define _GETTICKCOUNT_H_
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <stdbool.h>
+#ifndef _WIN32
 
-// HDR_IDX_xx values must be zero relative, and consecutive
-#define HDR_STR_ETAG "ETag: "
-#define HDR_STR_LASTMODIFIED "Last-Modified: "
-#define HDR_STR_CACHECONTROL "Cache-Control: "
-
-enum
-{
-HDR_IDX_ETAG,
-HDR_IDX_LASTMODIFIED,
-HDR_IDX_CACHECONTROL,
-
-HDR_COUNT // must always be last
-};
-
-typedef struct _ccf_t
-{
-	char *pUrlBaseName;
-	char *pFileName;
-	char *pUrlHash;
-	char *pFileNameTmp;
-	FILE* pFile;
-	bool bNeedUnlink;
-	char *pHdrs[HDR_COUNT];
-}ccf_t; // CurlCacheFile_Type
-
-typedef struct _cfr_t
-{
-	ccf_t ccf;
-	bool bFileFetched;
-	unsigned long httpResponseCode;
-	char *pContentType;
-	unsigned long queryDuration;
-} cfr_t; // "CurlFetchResult_Type"
-
-cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars);
-void curlCfrFree(cfr_t *pCfr);
-
-#ifdef DEBUG_WLOGIT
-void curlLogItSet(void (*pfn)(const char *));
+#ifdef __cplusplus
+extern "C" {
 #endif
 
+	extern unsigned long GetTickCount(void);
+
+#ifdef __cplusplus
+}
 #endif
+
+#endif // _WIN32
+
+#endif // _GETTICKCOUNT_H_

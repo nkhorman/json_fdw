@@ -2,7 +2,7 @@
 
 MODULE_big = json_fdw
 
-OBJS = json_fdw.o curlapi.o regexapi.o
+OBJS = json_fdw.o curlapi.o regexapi.o gettickcount.o
 
 ifeq ($(shell uname -s), Linux)
     # Directly link against yajl 2, so it works in Ubuntu 12.04 too.

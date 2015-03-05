@@ -37,6 +37,7 @@
 #include "curl/curl.h"
 #include "curlapi.h"
 #include "regexapi.h"
+#include "gettickcount.h"
 
 // Where files are downloaded to
 #define CURL_BASE_DIR "/tmp/json_fdw_cache"
@@ -221,11 +222,13 @@ static char *curlHeaderCallbackMatch(const char *pSrc, size_t srcLen, const char
 		while(*pl == ' ' || *pl == '\t' || *pr == '\n' || *pr == '\r')
 			pr--;
 
+		/*
 		// remove lead / trailing quote pair
 		if(*pl == '"' && *pr == '"')
 			{ pl++; pr--; }
 		if(*pl == '\'' && *pr == '\'')
 			{ pl++; pr--; }
+		*/
 
 		if(pr>pl)
 		{	int l = pr-pl+1;
@@ -435,7 +438,8 @@ static char *curlUrlHash(const char *pUrl, const char *pHttpPostVars)
 	char *pUrlHash = NULL;
 
 	curlMd5Hash(pMd5, pUrl);
-	curlMd5Hash(pMd5, pHttpPostVars);
+	if(pHttpPostVars != NULL)
+		curlMd5Hash(pMd5, pHttpPostVars);
 	pUrlHash = curlMd5Final(pMd5);
 	curlMd5Free(pMd5);
 
@@ -583,10 +587,10 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
 
 	if(pCfr != NULL)
 	{	struct curl_slist *chunk = NULL;
-
 		CURLcode res;
 		CURL *curl_handle = NULL;
 		char *pPostStr = curlEncodePostData(pHttpPostVars);
+		unsigned long queryStart = 0;
 
 		pCfr->ccf.pUrlHash = curlUrlHash(pUrl, pHttpPostVars);
 		curlCacheMetaGet(&pCfr->ccf);
@@ -637,13 +641,15 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
 		if(pCfr->ccf.pHdrs[HDR_IDX_ETAG] != NULL)
 		{	char *pHdr = NULL;
 
-			asprintf(&pHdr, "If-None-Match: \"%s\"", pCfr->ccf.pHdrs[HDR_IDX_ETAG]);
+			asprintf(&pHdr, "If-None-Match: %s", pCfr->ccf.pHdrs[HDR_IDX_ETAG]);
 			chunk = curl_slist_append(chunk, pHdr);
 			curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, chunk);
 		}
 
 		// the file should already be open, get it
+		queryStart = GetTickCount();
 		res = curl_easy_perform(curl_handle);
+		pCfr->queryDuration = GetTickCount() - queryStart; // how long did the fetch take ?
 
 		// clean up post data
 		if(pPostStr != NULL)
@@ -715,7 +721,6 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
 int main(int argc, char **argv)
 {
 	cfr_t *pCfr = NULL;
-	char *pUrlBaseName = NULL;
 	const char *pUrl = NULL;
 	const char *pHttpPostVars = NULL;
 	const char *pFileName = NULL;
@@ -739,31 +744,32 @@ int main(int argc, char **argv)
 	i++;
 	pHttpPostVars = (argc >= i ? argv[i-1] : NULL);
 
-	pUrlBasename = curlUrlBasename(pUrl);
-	if(pUrlBasename != NULL)
-	{
-		pCfr = curlFetch(pUrl, pHttpPostVars, pUrlBasename);
-		if(pCfr != NULL)
-			pFileName = pCfr->pFileName;
-		free(pUrlBasename);
-	}
+	pCfr = curlFetch(pUrl, pHttpPostVars);
+	if(pCfr != NULL)
+		pFileName = pCfr->ccf.pFileName;
 
 	printf("'%s' --> '%s' == %s\n", pUrl, pFileName, (pCfr && pCfr->bFileFetched ? "OK" : "FAIL"));
 	if(pCfr && pCfr->bFileFetched)
 	{	char *pCmd = NULL;
 
-		if(debug)
-			asprintf(&pCmd, "ls -la /tmp/; cat %s", pFileName);
-		else
-			asprintf(&pCmd, "cat %s", pFileName);
+		printf("HTTP response code %lu\n", pCfr->httpResponseCode);
+		printf("%s duration %lums\n", (pCfr->httpResponseCode == 200 ? "Fetch" : "Query"), pCfr->queryDuration);
+		if(pCfr->pContentType != NULL && strcasecmp("application/json", pCfr->pContentType) == 0)
+		{
+			if(debug)
+				asprintf(&pCmd, "ls -la %s/; cat %s", CURL_BASE_DIR, pFileName);
+			else
+				asprintf(&pCmd, "cat %s", pFileName);
+			system(pCmd);
+			free(pCmd);
+		}
+
+		asprintf(&pCmd, "ls -la %s/", CURL_BASE_DIR);
 		system(pCmd);
 		free(pCmd);
 	}
 
-	curlFetchFree(pCfr);
-
-	if(debug && pCfr && pCfr->bFileFetched)
-		system("ls -la /tmp/");
+	curlCfrFree(pCfr);
 
 	return 0;
 }

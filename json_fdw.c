@@ -402,7 +402,14 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 		// replace the url with the on box filename of the file that we just
 		// downloaded so that the existing file handlers can just use a file
 		filename = pCfr->ccf.pFileName;
-	ereport(DEBUG1, (errmsg("%s:%s:%u fetched %u", __FILE__, __func__, __LINE__, pCfr->bFileFetched)));
+	ereport(DEBUG1, (errmsg("%s:%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
+		, __FILE__, __func__, __LINE__
+		, pCfr->bFileFetched
+		, pCfr->queryDuration
+		, pCfr->httpResponseCode
+		, pCfr->pContentType
+		))
+		);
 
 	if(!openError)
 	{
