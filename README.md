@@ -30,7 +30,7 @@ json\_fdw depends on yajl-2.0 for parsing, and zlib-devel to read compressed
 files, and libcurl to fetch files from http servers.
 So we need to install these packages first:
 
-NB. The following intructions have not been updated to reflect the libcurl dependancy.
+**Note**: The following intructions have not been updated to reflect the libcurl dependancy.
 You'll need to adjust accordingly.
 
     ## Fedora 17+
@@ -134,18 +134,19 @@ Finally, let's run some example SQL queries on your JSON file.
 
 Fetching Remote Files
 ---------------------
-For remote fetch operations, an additional parameter has been introduced;
+For remote fetch operations, the \`\`filename'' parameter is now overloaded as
+any valid HTTP URL, and an additional parameter has been introduced;
 
 * \`\`http\_post\_vars'': A list of key value pairs separated by the \`\`&''
 symbol that are sent in a post operation.
 
-Using key values pairs in the filename URL and in htt_post_vars option are
+Using key values pairs in the filename URL and in http\_post\_vars option are
 not mutally exclusive, however, a given key value pair should only exist in
 one or the other.
 
 The following example shows how to fetch remote files, that are then cached locally.
 
-Note that the existing handling of Gzip files is supported, because, after the
+**Note**: that the existing handling of Gzip files is supported, because, after the
 file is fetched, it is handed off to the existing file handling code, as if
 it were previously staged on disk.
 
@@ -183,7 +184,7 @@ Fictitious usage example, using a Post operation;
         . .
     )
     SERVER json_server
-    OPTIONS (filename 'http://www.example.com/file/location/url/some.json.gz', http_post_vars 'another=parameter_set&separated=traditionally');
+    OPTIONS (filename 'http://www.example.com/file/location/url/someother.json', http_post_vars 'another=parameter_set&separated=traditionally');
 
 
 To refine the original table example so that the "wget" operation and query
