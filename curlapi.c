@@ -292,7 +292,7 @@ static void curlCacheFileOpen(ccf_t *pCcf)
 	char tmpfnamebuf[MAXFILENAME];
 
 	// make sure we can store our files
-	//mkdir(CURL_BASE_DIR, 0700);
+	mkdir(CURL_BASE_DIR, 0755);
 
 	// create a temporary file, for a possible use later
 	memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
