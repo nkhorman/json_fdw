@@ -19,7 +19,8 @@
 #include "catalog/pg_foreign_table.h"
 #include "utils/hsearch.h"
 #include "nodes/pg_list.h"
-#include "nodes/relation.h"
+#include "utils/rel.h"
+
 #include "curlapi.h"
 
 
@@ -86,16 +87,31 @@ typedef struct JsonFdwOptions
  */
 typedef struct JsonFdwExecState
 {
-	char *filename;
-	FILE *filePointer;
-	void *gzFilePointer;
+	char *filename;			// on disk file name of json content
+	FILE *filePointer;		// file pointer to on disk content
+	void *gzFilePointer;		// gz file pointe to on disk content
+
 	uint32 maxErrorCount;
 	uint32 errorCount;
 	uint32 currentLineNumber;
 	HTAB *columnMappingHash;
-	cfr_t *pCfr;
 
+	cfr_t *pCfr;			// curl fetch result
 } JsonFdwExecState;
+
+typedef struct _jfmes_t
+{
+	Relation rel;			// relcache entry for the foriegn table
+	int p_nums;			// number of parameters to transmit
+	FmgrInfo *p_flinfo;		// output conversion functions for them
+
+	List *retrieved_attrs;		// list of target attribute members
+	List *retrieved_names;		// list of target attribute names
+	List *table_options;
+
+	MemoryContext temp_cxt;		// context for per-tuple temp data
+
+} jfmes_t; // Json Fdw Modify Exec State Type
 
 
 /*

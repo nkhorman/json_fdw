@@ -49,12 +49,24 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "parser/parsetree.h"
+#include "nodes/relation.h"
 
 #if PG_VERSION_NUM >= 90300
 	#include "access/htup_details.h"
 #endif
 
 #include "curlapi.h"
+
+
+#define ELog(elevel, ...)  \
+do { \
+	elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
+	elog_finish(elevel, __VA_ARGS__); \
+	if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
+		pg_unreachable(); \
+} while(0)
+
 
 /* Local functions forward declarations */
 static StringInfo OptionNamesString(Oid currentContextId);
@@ -95,6 +107,12 @@ static int JsonAcquireSampleRows(Relation relation, int logLevel,
 								 HeapTuple *sampleRows, int targetRowCount,
 								 double *totalRowCount, double *totalDeadRowCount);
 
+static List *JsonPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelation, int subplan_index);
+static void JsonBeginForeignModify( ModifyTableState *mtstate, ResultRelInfo *resultRelInfo, List *fdw_private, int subplan_index, int eflags);
+static TupleTableSlot *JsonExecForeignInsert( EState *estate, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+//static void JsonAddForeignUpdateTargets(Query *parsetree, RangeTblEntry *target_rte, Relation target_relation);
+//static TupleTableSlot * JsonExecForeignUpdate( EState *estate, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+static void JsonEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo);
 
 /* Declarations for dynamic loading */
 PG_MODULE_MAGIC;
@@ -121,6 +139,14 @@ json_fdw_handler(PG_FUNCTION_ARGS)
 	fdwRoutine->ReScanForeignScan = JsonReScanForeignScan;
 	fdwRoutine->EndForeignScan = JsonEndForeignScan;
 	fdwRoutine->AnalyzeForeignTable = JsonAnalyzeForeignTable;
+
+	fdwRoutine->PlanForeignModify = JsonPlanForeignModify;
+	fdwRoutine->BeginForeignModify = JsonBeginForeignModify;
+	//fdwRoutine->AddForeignUpdateTargets = JsonAddForeignUpdateTargets; // update and delete
+	fdwRoutine->ExecForeignInsert = JsonExecForeignInsert;
+	//fdwRoutine->ExecForeignUpdate = JsonExecForeignUpdate;
+	//fdwRoutine->ExecForeignDelete = JsonExecForeignDelete;
+	fdwRoutine->EndForeignModify = JsonEndForeignModify;
 
 	PG_RETURN_POINTER(fdwRoutine);
 }
@@ -239,6 +265,7 @@ JsonGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 
 	double outputRowCount = clamp_row_est(tupleCount * rowSelectivity);
 	baserel->rows = outputRowCount;
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
 
 
@@ -278,6 +305,7 @@ JsonGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 									 				   NIL); /* no fdw_private */
 
 	add_path(baserel, foreignScanPath);
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
 
 
@@ -315,6 +343,7 @@ JsonGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 								   NIL, /* no expressions to evaluate */
 								   foreignPrivateList);
 
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	return foreignScan;
 }
 
@@ -341,15 +370,8 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 								explainState);
 		}
 	}
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
-
-#ifdef DEBUG_WLOGIT
-static void logIt(const char *pStr)
-{
-	if(pStr != NULL)
-		ereport(DEBUG1, (errmsg("%s", pStr)));
-}
-#endif
 
 /*
  * JsonBeginForeignScan opens the underlying json file for reading. The function
@@ -374,6 +396,7 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	const char *filename = NULL;
 	cfr_t *pCfr = NULL;
 
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
 	{
@@ -393,22 +416,19 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 
 	// See if this is an off box url, and try to fetch it
 	// and then pass it off to one of the native file handlers
-#ifdef DEBUG_WLOGIT
-	curlLogItSet(&logIt);
-#endif
+
 	pCfr = curlFetch(filename, options->pHttpPostVars);
 	openError = (pCfr == NULL || !pCfr->bFileFetched);
 	if(!openError)
 		// replace the url with the on box filename of the file that we just
 		// downloaded so that the existing file handlers can just use a file
 		filename = pCfr->ccf.pFileName;
-	ereport(DEBUG1, (errmsg("%s:%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
+	ELog(DEBUG1, "%s:%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
 		, __FILE__, __func__, __LINE__
 		, pCfr->bFileFetched
 		, pCfr->queryDuration
 		, pCfr->httpResponseCode
 		, pCfr->pContentType
-		))
 		);
 
 	if(!openError)
@@ -474,6 +494,7 @@ JsonIterateForeignScan(ForeignScanState *scanState)
 	bool *columnNulls = tupleSlot->tts_isnull;
 	int columnCount = tupleDescriptor->natts;
 
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	/* initialize all values for this row to null */
 	memset(columnValues, 0, columnCount * sizeof(Datum));
 	memset(columnNulls, true, columnCount * sizeof(bool));
@@ -543,6 +564,7 @@ JsonIterateForeignScan(ForeignScanState *scanState)
 static void
 JsonReScanForeignScan(ForeignScanState *scanState)
 {
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	JsonEndForeignScan(scanState);
 	JsonBeginForeignScan(scanState, 0);
 }
@@ -556,6 +578,7 @@ static void
 JsonEndForeignScan(ForeignScanState *scanState)
 {
 	JsonFdwExecState *executionState = (JsonFdwExecState *) scanState->fdw_state;
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	if (executionState == NULL)
 	{
 		return;
@@ -603,6 +626,7 @@ static JsonFdwOptions *
 JsonGetOptions(Oid foreignTableId)
 {
 	JsonFdwOptions *jsonFdwOptions = (JsonFdwOptions *) palloc0(sizeof(JsonFdwOptions));
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 
 	if(jsonFdwOptions != NULL)
 	{	char *maxErrorCountString = JsonGetOptionValue(foreignTableId, OPTION_NAME_MAX_ERROR_COUNT);
@@ -633,6 +657,7 @@ JsonGetOptionValue(Oid foreignTableId, const char *optionName)
 	ListCell *optionCell = NULL;
 	char *optionValue = NULL;
 
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	foreignTable = GetForeignTable(foreignTableId);
 	foreignServer = GetForeignServer(foreignTable->serverid);
 
@@ -1387,6 +1412,7 @@ JsonAnalyzeForeignTable(Relation relation,
 	struct stat statBuffer;
 
 	int statResult = stat(options->filename, &statBuffer);
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	if (statResult < 0)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
@@ -1451,6 +1477,7 @@ JsonAcquireSampleRows(Relation relation, int logLevel,
 
 	/* create list of columns of the relation */
 	int columnIndex = 0;
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		Var *column = (Var *) palloc0(sizeof(Var));
@@ -1581,4 +1608,520 @@ JsonAcquireSampleRows(Relation relation, int logLevel,
 	(*totalDeadRowCount) = 0;
 
 	return sampleRowCount;
+}
+
+// *** All the stuff below here, was broken by Neal Horman ;)
+// BKMRK
+static char *JsonAttributeNameGet(int varno, int varattno, PlannerInfo *root)
+{
+	RangeTblEntry *rte = planner_rt_fetch(varno, root);
+	List *options = GetForeignColumnOptions(rte->relid, varattno);
+	char *colname = NULL;
+	ListCell *lc;
+
+	foreach(lc, options)
+	{
+		DefElem *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "column_name") == 0)
+		{
+			colname = defGetString(def);
+			break;
+		}
+	}
+
+	if(colname == NULL)
+		colname = get_relid_attribute_name(rte->relid, varattno);
+
+	return colname;
+}
+
+/*
+ * An insert operation consists of
+ *	PlanForeignModify
+ *	BeginForeignModify
+ *	ExecForeignInsert
+ *	EndForeignModify
+ */
+
+static List *JsonPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelation, int subplan_index)
+{
+	CmdType		operation = plan->operation;
+	RangeTblEntry	*rte = planner_rt_fetch(resultRelation, root);
+	Relation	rel = heap_open(rte->relid, NoLock);
+	ForeignTable	*table = GetForeignTable(RelationGetRelid(rel));
+	//ForeignServer	*server = GetForeignServer(table->serverid);
+
+	//char		*tableName = RelationGetRelationName(rel);
+	List		*targetAttrs = NULL;
+	List		*targetNames = NULL;
+	/*
+	ListCell	*lc;
+
+	foreach(lc, table->options)
+	{
+		DefElem *def = (DefElem *) lfirst(lc);
+		const char *str = defGetString(def);
+
+		ELog(DEBUG1, "%s:%d '%s' --> '%s'", __func__, __LINE__, def->defname, str);
+	}
+	*/
+
+	//ELog(DEBUG1, "%s:%d table name '%s'", __func__, __LINE__, tableName);
+
+	switch (operation)
+	{
+		case CMD_INSERT:
+			{
+				TupleDesc tupdesc = RelationGetDescr(rel);
+				int attnum;
+
+				// collect relation information
+				for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+				{
+					Form_pg_attribute attr = tupdesc->attrs[attnum - 1];
+
+					if (!attr->attisdropped)
+					{
+						// collect the name of the attribute
+						char *colname = JsonAttributeNameGet(resultRelation, attnum, root);
+						targetNames = lappend(targetNames, colname);
+
+						// collect the index of the attribute
+						targetAttrs = lappend_int(targetAttrs, attnum);
+
+						//ELog(DEBUG1, "%s:%d %s", __func__, __LINE__, colname);
+					}
+				}
+			}
+			break;
+		default:
+			break;
+	}
+
+	heap_close(rel, NoLock);
+	return list_make2(targetNames, targetAttrs);
+}
+
+static void JsonBeginForeignModify(
+	ModifyTableState *mtstate,
+	ResultRelInfo *resultRelInfo,
+	List *fdw_private,
+	int subplan_index,
+	int eflags
+	)
+{
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+
+	if(!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+	{
+		AttrNumber n_params = 0;
+		Oid typefnoid = InvalidOid;
+		bool isvarlena = false;
+		ListCell *lc = NULL;
+
+		EState *estate = mtstate->ps.state;
+		Relation rel = resultRelInfo->ri_RelationDesc;
+		Oid foreignTableId = RelationGetRelid(rel);
+		//RangeTblEntry *rte = rt_fetch(resultRelInfo->ri_RangeTableIndex, estate->es_range_table);
+		//Oid userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+		ForeignTable *table = GetForeignTable(foreignTableId);
+		//ForeignServer *server = GetForeignServer(table->serverid);
+		//UserMapping *user = GetUserMapping(userid, server->serverid);
+		jfmes_t *pJfmes = (jfmes_t *) palloc0(sizeof(jfmes_t));
+
+		if(pJfmes != NULL)
+		{
+			pJfmes->rel = rel;
+
+			pJfmes->retrieved_names = (List *) list_nth(fdw_private, 0);
+			pJfmes->retrieved_attrs = (List *) list_nth(fdw_private, 1);
+			pJfmes->table_options = table->options;
+
+			n_params = list_length(pJfmes->retrieved_attrs) + 1;
+			pJfmes->p_flinfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo) * n_params);
+			pJfmes->p_nums = 0;
+
+			pJfmes->temp_cxt = AllocSetContextCreate(
+				estate->es_query_cxt,
+				"json_fdw temporary data",
+				ALLOCSET_SMALL_MINSIZE,
+				ALLOCSET_SMALL_INITSIZE,
+				ALLOCSET_SMALL_MAXSIZE
+				);
+
+			// collect accessor functions for each attribute
+			foreach(lc, pJfmes->retrieved_attrs)
+			{
+				int attnum = lfirst_int(lc);
+				Form_pg_attribute attr = RelationGetDescr(rel)->attrs[attnum - 1];
+
+				Assert(!attr->attisdropped);
+
+				getTypeOutputInfo(attr->atttypid, &typefnoid, &isvarlena);
+				fmgr_info(typefnoid, &pJfmes->p_flinfo[pJfmes->p_nums]);
+				pJfmes->p_nums++;
+			}
+			Assert(pJfmes->p_nums <= n_params);
+		}
+
+		resultRelInfo->ri_FdwState = pJfmes;
+	}
+}
+
+
+static int JsonPg2Json(StringInfo Str, Oid type, Datum value, const char *name, bool *isnull);
+
+static TupleTableSlot *JsonExecForeignInsert(
+	EState *estate,
+	ResultRelInfo *resultRelInfo,
+	TupleTableSlot *slot,
+	TupleTableSlot *planSlot
+	)
+{
+	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
+	MemoryContext oldContext = MemoryContextSwitchTo(pJfmes->temp_cxt);
+	int nParams = list_length(pJfmes->retrieved_attrs);
+	/*
+	ListCell	*lc;
+
+	foreach(lc, pJfmes->table_options)
+	{
+		DefElem *def = (DefElem *) lfirst(lc);
+		const char *str = defGetString(def);
+
+		ELog(DEBUG1, "%s:%d '%s' --> '%s'", __func__, __LINE__, def->defname, str);
+	}
+	*/
+
+	if(nParams == list_length(pJfmes->retrieved_names))
+	{
+		bool *isnull = (bool*) palloc0(sizeof(bool) * nParams);
+		ListCell *lcAttrs = NULL;
+		ListCell *lcNames = list_head(pJfmes->retrieved_names);
+		StringInfoData str;
+		int paramNum = 0;
+
+		//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+
+		// collect attribute isnull info so that we know
+		// if we need to append another attribute when
+		// building the json string
+		foreach(lcAttrs, pJfmes->retrieved_attrs)
+		{
+			int attnum = lfirst_int(lcAttrs) - 1;
+			slot_getattr(slot, attnum + 1, &isnull[attnum]);
+		}
+
+		// build json object document string
+		initStringInfo(&str);
+		appendStringInfoString(&str, "{ ");
+		foreach(lcAttrs, pJfmes->retrieved_attrs)
+		{
+			int attnum = lfirst_int(lcAttrs) - 1;
+			Datum value = slot_getattr(slot, attnum + 1, &isnull[attnum]);
+			Oid type = slot->tts_tupleDescriptor->attrs[attnum]->atttypid;
+
+			//ELog(DEBUG1, "%s:%d %u/%u %s %u", __func__, __LINE__, attnum, nParams, lfirst(lcNames), isnull[attnum]);
+			if(JsonPg2Json(&str, type, value, lfirst(lcNames), &isnull[attnum])
+				// if not last attribute
+				&& paramNum < nParams -1
+				&& !isnull[attnum+1]
+			)
+			{
+				appendStringInfoString(&str, ", ");
+			}
+			paramNum++;
+
+			lcNames = lnext(lcNames);
+		}
+		appendStringInfoString(&str, " }");
+
+		ELog(DEBUG1, "%s:%d --> %s", __func__, __LINE__, str.data);
+	}
+
+	MemoryContextSwitchTo(oldContext);
+	MemoryContextReset(pJfmes->temp_cxt);
+
+	return slot;
+}
+
+/*
+static void JsonAddForeignUpdateTargets(Query *parsetree, RangeTblEntry *target_rte, Relation target_relation)
+{
+	// What we need is the rowid which is the first column
+	Form_pg_attribute attr = RelationGetDescr(target_relation)->attrs[0];
+	// Make a Var representing the desired value
+	Var *var = makeVar(parsetree->resultRelation, 1, attr->atttypid, attr->atttypmod, InvalidOid, 0);
+	// Wrap it in a TLE with the right name ...
+	const char *attrname = NameStr(attr->attname);
+
+	TargetEntry *tle = makeTargetEntry((Expr *) var,
+		list_length(parsetree->targetList) + 1,
+		pstrdup(attrname),
+		true
+		);
+
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	// ... and add it to the query's targetlist
+	parsetree->targetList = lappend(parsetree->targetList, tle);
+}
+
+static TupleTableSlot * JsonExecForeignUpdate(
+	EState *estate,
+	ResultRelInfo *resultRelInfo,
+	TupleTableSlot *slot,
+	TupleTableSlot *planSlot
+	)
+{
+	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
+	Relation          rel = resultRelInfo->ri_RelationDesc;
+	Oid               foreignTableId = RelationGetRelid(rel);
+	bool              is_null = false;
+	ListCell          *lc = NULL;
+	int               bindnum = 0;
+	Oid               typeoid;
+	Datum             value = 0;
+	int               n_params = 0;
+	bool              *isnull = NULL;
+	int               i = 0;
+
+	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+
+	n_params = list_length(pJfmes->retrieved_attrs);
+
+	isnull = palloc0(sizeof(bool) * n_params);
+
+	// Bind the values
+	foreach(lc, pJfmes->retrieved_attrs)
+	{
+		int attnum = lfirst_int(lc);
+		Oid type;
+
+		// first attribute cannot be in target list attribute
+		if (attnum == 1)
+			continue;
+
+		type = slot->tts_tupleDescriptor->attrs[attnum - 1]->atttypid;
+		value = slot_getattr(slot, attnum, (bool*)(&isnull[i]));
+
+		bindnum++;
+		i++;
+	}
+
+	// Get the id that was passed up as a resjunk column
+	value = ExecGetJunkAttribute(planSlot, 1, &is_null);
+	typeoid = get_atttype(foreignTableId, 1);
+
+	return slot;
+}
+*/
+
+static void JsonEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo)
+{
+	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
+
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+}
+
+// Transmute a postgres text array into a json text array
+enum
+{
+	SM_UNQUOTED,
+	SM_QUOTED,
+	SM_NEEDQUOTE,
+};
+
+static void JsonPgTextArray2Json(StringInfo outStr, const char *inStr, int len)
+{	int state = SM_UNQUOTED;
+	int i;
+
+	if(len)
+		appendStringInfoCharMacro(outStr, '[');
+
+	for(i=0; i<len; i++)
+	{
+		switch(state)
+		{
+			case SM_UNQUOTED:
+				if(inStr[i] == '\\' && i+1 < len)
+					appendStringInfoCharMacro(outStr, inStr[i++]);
+				else if(inStr[i] == '"')
+					state = SM_QUOTED;
+				else if(inStr[i] != ',')
+				{
+					appendStringInfoCharMacro(outStr, '"');
+					state = SM_NEEDQUOTE;
+				}
+				appendStringInfoCharMacro(outStr, inStr[i]);
+				break;
+
+			case SM_NEEDQUOTE:
+				if(inStr[i] == '\\' && i+1 < len)
+					appendStringInfoCharMacro(outStr, inStr[i++]);
+				else if(inStr[i] == ',')
+				{
+					appendStringInfoCharMacro(outStr, '"');
+					state = SM_UNQUOTED;
+				}
+				appendStringInfoCharMacro(outStr, inStr[i]);
+				break;
+
+			case SM_QUOTED:
+				if(inStr[i] == '\\' && i+1 < len)
+					appendStringInfoCharMacro(outStr, inStr[i++]);
+				else if(inStr[i] == '"')
+					state = SM_UNQUOTED;
+				appendStringInfoCharMacro(outStr, inStr[i]);
+				break;
+		}
+	}
+
+	if(state == SM_NEEDQUOTE)
+		appendStringInfoCharMacro(outStr, '"');
+	if(i)
+		appendStringInfoCharMacro(outStr, ']');
+}
+
+// Convert a postgres attribute value into a json name and value pair
+// and append it to the json object string "str"
+// On return, tell the consumer if we did that for this attribute.
+static int JsonPg2Json(StringInfo str, Oid type, Datum value, const char *name, bool *isnull)
+{	int oldLen = str->len;
+
+	if(!*isnull)
+	{
+		switch(type)
+		{
+			case INT2OID: appendStringInfo(str, "\"%s\": %u", name, (int16)DatumGetInt16(value)); break;
+			case INT4OID: appendStringInfo(str, "\"%s\": %u", name, (int32)DatumGetInt32(value)); break;
+			case INT8OID: appendStringInfo(str, "\"%s\": %lu", name, (int64)DatumGetInt64(value)); break;
+			case FLOAT4OID: appendStringInfo(str, "\"%s\": %f", name, (float4)DatumGetFloat4(value)); break;
+			case FLOAT8OID: appendStringInfo(str, "\"%s\": %f", name, (float8)DatumGetFloat8(value)); break;
+
+			case NUMERICOID:
+				{	Datum valueDatum = DirectFunctionCall1(numeric_float8, value);
+
+					appendStringInfo(str, "\"%s\": %f", name, (float8)DatumGetFloat8(valueDatum));
+				}
+				break;
+
+			//case BOOLOID: appendStringInfo(str, "\"%s\": %s", name, (((int32)DatumGetInt32(value))) ? "true", "false"); break;
+			case BOOLOID: appendStringInfo(str, "\"%s\": %u", name, (int32)DatumGetInt32(value)); break;
+
+			case BPCHAROID:
+			case VARCHAROID:
+			case TEXTOID:
+			case NAMEOID:
+				{	char *outputString = NULL;
+					Oid outputFunctionId = InvalidOid;
+					bool typeVarLength = false;
+
+					getTypeOutputInfo(type, &outputFunctionId, &typeVarLength);
+					outputString = OidOutputFunctionCall(outputFunctionId, value);
+
+					appendStringInfo(str, "\"%s\": \"%s\"", name, outputString);
+				}
+				break;
+
+			case DATEOID:
+			case TIMEOID:
+			case TIMESTAMPOID:
+			case TIMESTAMPTZOID:
+				{
+					int pgtz;
+					struct pg_tm pgtm;
+					fsec_t fsec;
+					const char *pgtzn;
+					struct tm tm;
+					char buffer [128];
+					Timestamp valueTimestamp;
+
+					// get pg time
+					if(type == DATEOID)
+					{	Datum valueDatum = DirectFunctionCall1(date_timestamp, value);
+
+						valueTimestamp = DatumGetTimestamp(valueDatum);
+					}
+					else
+						valueTimestamp = DatumGetTimestamp(value);
+
+					// extract pg time
+					timestamp2tm(valueTimestamp, &pgtz, &pgtm, &fsec, &pgtzn, pg_tzset("UTC"));
+
+					// map to unix time
+					tm.tm_sec = pgtm.tm_sec;
+					tm.tm_min = pgtm.tm_min;
+					tm.tm_hour = pgtm.tm_hour;
+					tm.tm_mday = pgtm.tm_mday;
+					tm.tm_mon = pgtm.tm_mon - 1;
+					tm.tm_year = pgtm.tm_year - 1900;
+					tm.tm_wday = pgtm.tm_wday;
+					tm.tm_yday = pgtm.tm_yday;
+					tm.tm_isdst = pgtm.tm_isdst;
+					tm.tm_gmtoff = pgtm.tm_gmtoff;
+					tm.tm_zone = (char *)pgtm.tm_zone;
+
+					memset(buffer, 0, sizeof(buffer));
+					// convert to string in ISO format
+					strftime(buffer, sizeof(buffer)-1, "%Y-%m-%d %H:%M:%S %Z", &tm);
+
+					appendStringInfo(str, "\"%s\": \"%s\"", name, buffer);
+				}
+				break;
+		/*
+			case BITOID:
+			{
+				int32 dat;
+				int32 *bufptr = palloc0(sizeof(int32));
+				char *outputString = NULL;
+				Oid outputFunctionId = InvalidOid;
+				bool typeVarLength = false;
+				getTypeOutputInfo(type, &outputFunctionId, &typeVarLength);
+				outputString = OidOutputFunctionCall(outputFunctionId, value);
+
+				dat = bin_dec(atoi(outputString));
+				memcpy(bufptr, (char*)&dat, sizeof(int32));
+				binds[attnum].buffer = bufptr;
+				break;
+			}
+		*/
+			case INT4ARRAYOID:
+			case INT2ARRAYOID:
+			case FLOAT4ARRAYOID:
+			case TEXTARRAYOID:
+				{	Oid outputFunctionId;
+					bool typeVarLength = false;
+					char *outputString = NULL;
+					int l;
+
+					getTypeOutputInfo(type, &outputFunctionId, &typeVarLength);
+					outputString = OidOutputFunctionCall(outputFunctionId, value);
+
+					// trim left and right curly braces
+					outputString++;
+					l = strlen(outputString) - 1;
+
+					if(type != TEXTARRAYOID)
+						appendStringInfo(str, "\"%s\": [%*.*s]", name, l, l, outputString);
+					else
+					{
+						appendStringInfo(str, "\"%s\": ", name);
+						JsonPgTextArray2Json(str, outputString, l);
+					}
+				}
+				break;
+
+			//case OIDARRAYOID:
+			default:
+			{
+				ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+								errmsg("cannot convert constant value to JSON value"),
+								errhint("Constant value data type: %u", type)));
+				break;
+			}
+		}
+	}
+
+	return (str->len > oldLen); // we appended new characters
 }
