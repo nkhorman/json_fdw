@@ -6,9 +6,8 @@ files. The extension doesn't require any data to be loaded into the database,
 and supports analytic queries against array types, nested fields, and
 heterogeneous documents.
 
-json\_fdw currently only works with PostgreSQL 9.2, and uses YAJL to parse JSON
-files. Future releases of this wrapper will use the JSON parser functions that
-are to going to be introduced in the PostgreSQL 9.3 release.
+json\_fdw currently only works with PostgreSQL 9.4, and uses YAJL to parse JSON
+files.
 
 This version of json\_fdw has been extended to be able to pull files from http
 servers, and stage them locally. It depends on libcurl from http://curl.haxx.se/libcurl/ .
@@ -19,23 +18,21 @@ Local caching of the remote content is done, and validated using Entity Tags
 A future TODO will be to only execute remote ETAG re-validation after aging
 based on Cache-Control and / or Content-Expires headers.
 
-Also, this, and the original version, both are compatible with PostgreSQL 9.4
-release.
-
 
 Building
 --------
 
-json\_fdw depends on yajl-2.1/json_path for parsing, and zlib-devel to read compressed
+json\_fdw depends on yajl for parsing, and zlib-devel to read compressed
 files, and libcurl to fetch files from http servers.
 So we need to install these packages first:
 
-**Note**: The following intructions have not been updated to reflect the libcurl dependancy.
+**Note**: The following intructions have not been updated to reflect;
+ * the libcurl dependancy.
+ * You'll need to get the forked yajl and use the \`\`json_path'' branch from http://github.com/nkhorman/yajl
+**Do not** use the yajl from http://github.com/lloyd/yajl, json_fdw won't compile!
+
 You'll need to adjust accordingly.
 
-**Note**: The following intructions have not been updated to reflect the yajl library dependancy change.
-You'll need to get the forked yajl and use the json_path branch from http://github.com/nkhorman/yajl
-Do not use the lloyd/yajl, it won't compile!
 
     ## Fedora 17+
     sudo yum install zlib-devel yajl-devel
@@ -55,7 +52,7 @@ Do not use the lloyd/yajl, it won't compile!
     echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/libyajl.conf
     sudo ldconfig
 
-Once you have yajl-2.0 and zlib installed on your machine, you are ready to build
+Once you have yajl, zlib, and libcurl installed on your machine, you are ready to build
 json\_fdw. For this, you need to include the pg\_config directory path in your
 make command. This path is typically the same as your PostgreSQL installation's
 bin/ directory path. For example:
