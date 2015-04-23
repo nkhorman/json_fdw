@@ -37,6 +37,7 @@
 #include "curl/curl.h"
 #include "curlapi.h"
 #include "regexapi.h"
+#include "regexapi_helper.h"
 #include "gettickcount.h"
 
 // Where files are downloaded to
@@ -61,7 +62,7 @@ static void curlLogIt(const char *pFmt, ...)
 		char *pStr = NULL;
 
 		va_start(vl, pFmt);
-		asprintf(&pStr, pFmt, vl);
+		vasprintf(&pStr, pFmt, vl);
 		va_end(vl);
 
 		if(pStr != NULL)
@@ -160,42 +161,6 @@ static char *curlAsciiMd5Hash(const char *pFmt, ...)
 	return pStr;
 }
 */
-
-// URL validation support
-typedef struct _regexapilist_t
-{
-	const char *pattern;
-	int flags;
-	int findCount;
-}regexapilist_t;
-
-#define URLHOSTNAME "([a-z0-9][a-z0-9._-]*[.][a-z]{2,})"
-#define URLHOSTIPV4 "([0-9]{1,3}[.][0-9]{1,3}[.][0.9]{1,3}[.][0-9]{1,3})"
-#define URLHOSTLOCAL "(localhost)"
-#define URLHOST "(" URLHOSTNAME "|" URLHOSTLOCAL "|" URLHOSTIPV4 ")"
-#define URLPORT "(:[0-9]+)*"
-#define URLSPEC URLHOST URLPORT
-#define URISPEC "/.*"
-
-// http[s]?://([a-z0-9][a-z0-9._-]*[.][a-z]{2,}(:[0-9]+)*)(.*)
-// http[s]?://((([a-z0-9][a-z0-9._-]*[.][a-z]{2,})|(localhost)|([0-9]{1,3}[.][0-9]{1,3}[.][0.9]{1,3}[.][0-9]{1,3}))(:[0-9]+)*)(/.{0,})
-
-// List of valid URL regexes that CURL supports
-static regexapilist_t const regexUrls[] =
-{
-	{ "http[s]?://(" URLSPEC ")(" URISPEC ")", ( REG_EXTENDED | REG_ICASE ), 2 },
-	{ NULL, 0, 0 },
-};
-
-// Supported URL regex validation iterator
-static regexapi_t *regexapi_exec_list(const char *subject, regexapilist_t const *pRegexList)
-{	regexapi_t *pRat = NULL;
-
-	while(pRat == NULL && pRegexList->pattern != NULL)
-		pRat = regexapi_exec(subject, pRegexList->pattern, pRegexList->flags, pRegexList->findCount);
-
-	return pRat;
-}
 
 // Callback from CURL to write contents to disk
 static size_t curlWriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
@@ -325,7 +290,7 @@ static void curlCacheFileOpen(ccf_t *pCcf)
 // If so, grab the basename, for use later
 static bool curlIsUrl(const char *pUrl, ccf_t *pCcf)
 {	bool bIsUrl = false;
-	regexapi_t *pRat = regexapi_exec_list(pUrl, &regexUrls[0]);
+	regexapi_t *pRat = regexapi_url(pUrl);
 
 	// If we found a regex match, then we assume that CURL supports the url
 	if(pRat != NULL)
@@ -466,6 +431,12 @@ static ccf_t *curlCacheMetaSet(const char *pFileName
 }
 */
 
+// Sort of like strtok, but more convienient.
+// Scribbles in the source.
+// Return a pointer to the begining of the 'delim'ited string,
+// white space trimmed on the left.
+// Also addvances the source pointer to the delimited point,
+// zero terminates it, then white space trimmed on the right.
 static char *stradvtok(char **ppSrc, char delim)
 {
 	char *dst = *ppSrc;
@@ -578,8 +549,150 @@ static void curlCacheFileFinalize(cfr_t *pCfr)
 	}
 }
 
+static CURL *curlCoreInit(const char *pUrl, void *pHeaderFn, void *pHeaderData)
+{	CURL *curl_handle = NULL;
+
+	curl_global_init(CURL_GLOBAL_ALL);
+	curl_handle = curl_easy_init();
+	curl_easy_setopt(curl_handle, CURLOPT_URL, pUrl);
+
+	curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "json_fdw/1.2 (+http://github.com/nkhorman/json_fdw) libcurl-agent/1.0");
+	curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30); // TODO - table option ?
+
+	curl_easy_setopt(curl_handle, CURLOPT_ACCEPT_ENCODING, ""); // turn on builtin supported default content dencoding
+	//curl_easy_setopt(curl_handle, CURLOPT_TRANSFER_ENCODING, 1L); // turn on transfer decoding
+
+	curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L); // turn on redirection following
+	curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 5); // for a maximum of 5
+	curl_easy_setopt(curl_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL); // maintain a post as a post on redirects
+	curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn one Refer when redirecting
+
+	if(pHeaderFn != NULL)
+	{
+		curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, pHeaderFn);
+		curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, pHeaderData);
+	}
+
+	return curl_handle;
+}
+
+static CURL *curlCoreInitGetOrPost(const char *pUrl, void *pWriteFn, void *pWriteData, void *pHeaderFn, void *pHeaderData, const char *pPostStr)
+{	CURL *curl_handle = curlCoreInit(pUrl, pHeaderFn, pHeaderData);
+
+	if(pWriteFn != NULL)
+	{
+		curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, pWriteFn);
+		curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, pWriteData);
+	}
+
+	if(pPostStr != NULL && *pPostStr)
+	{
+		curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
+		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, pPostStr);
+		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, strlen(pPostStr));
+	}
+
+	return curl_handle;
+}
+
+typedef struct _cprfc_t
+{
+	const char *buffer; // data to send
+	size_t len; // size to send
+	size_t index; // current index into buffer where the next send operations should start from
+}cprfc_t; // Curl Put Read Fn Callback Type
+
+static size_t curlPutReadFnCallback(char *buffer, size_t size, size_t nmemb, void *instream)
+{	cprfc_t *pCprfc = (cprfc_t *)instream;
+	size_t curl_size = nmemb * size;
+	size_t left_to_copy = pCprfc->len - pCprfc->index;
+	size_t to_copy = (left_to_copy < curl_size) ? left_to_copy : curl_size;
+
+	memcpy(buffer, &pCprfc->buffer[pCprfc->index], to_copy);
+	pCprfc->index += to_copy;
+
+	return to_copy;
+}
+
+static size_t curlPutHeaderFnCallback(void *buffer, size_t size, size_t nmemb, void *userp)
+{	int curl_size = nmemb * size;
+
+	printf("%s:%d header '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
+
+	return curl_size;
+}
+
+static size_t curlPutWriteFnCallback(void *buffer, size_t size, size_t nmemb, void *userp)
+{	int curl_size = nmemb * size;
+
+	printf("%s:%d '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
+
+	return curl_size;
+}
+
+static CURL *curlCoreInitPut(const char *pUrl, void *pReadFn, void *pReadData, void *pHeaderFn, void *pHeaderData, size_t size)
+{	CURL *curl_handle = curlCoreInit(pUrl, pHeaderFn, pHeaderData);
+
+	if(pReadFn != NULL)
+	{
+		curl_easy_setopt(curl_handle, CURLOPT_READFUNCTION, pReadFn);
+		curl_easy_setopt(curl_handle, CURLOPT_READDATA, pReadData);
+	}
+
+	curl_easy_setopt(curl_handle, CURLOPT_PUT, 1L);
+	curl_easy_setopt(curl_handle, CURLOPT_UPLOAD, 1L);
+	curl_easy_setopt(curl_handle, CURLOPT_INFILESIZE_LARGE, (curl_off_t)size);
+
+	curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, &curlPutWriteFnCallback);
+	curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, NULL);
+
+	curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, &curlPutHeaderFnCallback);
+	curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, NULL);
+
+	/*
+	if(pPostStr != NULL && *pPostStr)
+	{
+		curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
+		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, pPostStr);
+		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, strlen(pPostStr));
+	}
+	*/
+
+	return curl_handle;
+}
+
+/*
+void curlCoreInitAuth(CURL *curl_handle)
+{
+	// TODO - auth foo - possibly some or all of these
+	//	CURLOPT_USERPWD or (CURLOPT_USERNAME and CURLOPT_PASSWORD)
+	//	CURLOPT_LOGIN_OPTIONS
+	//	CURLOPT_PROXYUSERNAME and CURLOPT_PROXYPASSWORD
+	//	CURLOPT_HTTPAUTH
+	//	CURLOPT_TLSAUTH_USERNAME and CURLOPT_TLSAUTH_PASSWORD
+	//	CURLOPT_PROXYAUTH
+	//	CURLOPT_SASL_IR
+	//	CURLOPT_XOAUTH2_BEARER
+	//
+}
+*/
+
+static struct curl_slist *curlCoreInitHeader(CURL *curl_handle, struct curl_slist *pChunk, const char *pName, const char *pValue)
+{	char *pHdr = NULL;
+
+	asprintf(&pHdr, "%s: %s", pName, pValue);
+	if(pHdr != NULL)
+	{
+		pChunk = curl_slist_append(pChunk, pHdr);
+		curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, pChunk);
+		free(pHdr);
+	}
+
+	return pChunk;
+}
+
 // Fetch the file from the url
-cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
+cfr_t *curlFetchFile(const char *pUrl, const char *pHttpPostVars)
 {	cfr_t *pCfr = calloc(1,sizeof(cfr_t));
 
 	if(!curlIsUrl(pUrl, &pCfr->ccf))
@@ -588,63 +701,20 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
 	if(pCfr != NULL)
 	{	struct curl_slist *chunk = NULL;
 		CURLcode res;
-		CURL *curl_handle = NULL;
 		char *pPostStr = curlEncodePostData(pHttpPostVars);
+		CURL *curl_handle = curlCoreInitGetOrPost(pUrl, curlWriteCallback, (void *)&pCfr->ccf, curlHeaderCallback, (void *)&pCfr->ccf, pPostStr);
 		unsigned long queryStart = 0;
 
 		pCfr->ccf.pUrlHash = curlUrlHash(pUrl, pHttpPostVars);
 		curlCacheMetaGet(&pCfr->ccf);
 		curlCacheFileOpen(&pCfr->ccf);
 
-		curl_global_init(CURL_GLOBAL_ALL);
-		curl_handle = curl_easy_init();
-		curl_easy_setopt(curl_handle, CURLOPT_URL, pUrl);
-
-		curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curlWriteCallback);
-		curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&pCfr->ccf);
-		curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0"); // TODO - table option ?
-		curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30); // TODO - table option ?
-
-		curl_easy_setopt(curl_handle, CURLOPT_ACCEPT_ENCODING, ""); // turn on builtin supported default content dencoding
-		curl_easy_setopt(curl_handle, CURLOPT_TRANSFER_ENCODING, 1L); // turn on transfer decoding
-
-		curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L); // turn on redirection following
-		curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 5); // for a maximum of 5
-		curl_easy_setopt(curl_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL); // maintain a post as a post on redirects
-		curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn one Refer when redirecting
-
-		curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, (void *)&pCfr->ccf);
-		curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
-
-		// TODO - auth foo - possibly some or all of these
-		//	CURLOPT_USERPWD or (CURLOPT_USERNAME and CURLOPT_PASSWORD)
-		//	CURLOPT_LOGIN_OPTIONS
-		//	CURLOPT_PROXYUSERNAME and CURLOPT_PROXYPASSWORD
-		//	CURLOPT_HTTPAUTH
-		//	CURLOPT_TLSAUTH_USERNAME and CURLOPT_TLSAUTH_PASSWORD
-		//	CURLOPT_PROXYAUTH
-		//	CURLOPT_SASL_IR
-		//	CURLOPT_XOAUTH2_BEARER
-		//
-
-		if(pPostStr != NULL && *pPostStr)
-		{
-			curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
-			curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, pPostStr);
-			curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, strlen(pPostStr));
-		}
-
-		// inject etag header request
+		// inject etag header request ?
 		// TODO;
 		//	1. don't if the actual file is missing, so that we get a new one
-		// 	2. if stale acording to cache-control
+		// 	2. don't if stale acording to cache-control
 		if(pCfr->ccf.pHdrs[HDR_IDX_ETAG] != NULL)
-		{	char *pHdr = NULL;
-
-			asprintf(&pHdr, "If-None-Match: %s", pCfr->ccf.pHdrs[HDR_IDX_ETAG]);
-			chunk = curl_slist_append(chunk, pHdr);
-			curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, chunk);
-		}
+			chunk = curlCoreInitHeader(curl_handle, chunk, "If-None-Match", pCfr->ccf.pHdrs[HDR_IDX_ETAG]);
 
 		// the file should already be open, get it
 		queryStart = GetTickCount();
@@ -717,34 +787,59 @@ cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars)
 	return pCfr;
 }
 
+// Put
+int curlPut(const char *pUrl, const char *pBuffer, size_t bufferSize, const char *pContentType)
+{	int ok = 0;
+
+	CURLcode res;
+	cprfc_t cprfc = { pBuffer, bufferSize, 0 };
+	CURL *curl_handle = curlCoreInitPut(pUrl, &curlPutReadFnCallback, &cprfc, NULL, NULL, cprfc.len);
+	struct curl_slist *chunk = curlCoreInitHeader(curl_handle, NULL, "Content-Type", pContentType);
+
+	printf("%s:%d\n", __func__, __LINE__);
+	res = curl_easy_perform(curl_handle);
+	printf("%s:%d\n", __func__, __LINE__);
+
+	// this means that we communicated with the server
+	if(res == CURLE_OK)
+	{
+		unsigned long httpResponseCode = 0;
+
+		curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &httpResponseCode);
+
+		ok = (httpResponseCode == 200);
+	}
+
+	// all done, cleanup
+	curl_easy_cleanup(curl_handle);
+	curl_global_cleanup();
+	curl_slist_free_all(chunk);
+
+	return ok;
+}
+
 #ifdef _CURL_UNIT_TEST
-int main(int argc, char **argv)
+int debug = 0;
+
+void logit(const char *p)
+{
+	if(debug)
+		printf("%s\n",p);
+}
+
+void test1(int argc, char **argv)
 {
 	cfr_t *pCfr = NULL;
 	const char *pUrl = NULL;
 	const char *pHttpPostVars = NULL;
 	const char *pFileName = NULL;
-	int debug = 0;
-	int i = 2;
+	int i = 0;
 
-	if(argc == 1)
-	{
-		printf("%s: [-d] [url] [optional post vars]\n", argv[0]);
-		exit(0);
-	}
-
-	if(argc >= i && *argv[i-1] == '-')
-	{
-		if(argv[i-1][1] == 'd')
-			debug = 1;
-		i++;
-	}
-
-	pUrl = (argc >= i ? argv[i-1] : NULL);
+	pUrl = (argc >= i ? argv[i] : NULL);
 	i++;
-	pHttpPostVars = (argc >= i ? argv[i-1] : NULL);
+	pHttpPostVars = (argc >= i ? argv[i] : NULL);
 
-	pCfr = curlFetch(pUrl, pHttpPostVars);
+	pCfr = curlFetchFile(pUrl, pHttpPostVars);
 	if(pCfr != NULL)
 		pFileName = pCfr->ccf.pFileName;
 
@@ -770,6 +865,54 @@ int main(int argc, char **argv)
 	}
 
 	curlCfrFree(pCfr);
+}
+
+void test2(int argc, char **argv)
+{
+	const char *pUrl = NULL;
+	const char *pBuffer = NULL;
+	int i = 0;
+	int ok = 0;
+
+	pUrl = (argc >= i ? argv[i] : NULL);
+	i++;
+	pBuffer = (argc >= i ? argv[i] : NULL);
+
+	ok = curlPut(pUrl, pBuffer, strlen(pBuffer), "application/json");
+
+	printf("'%s' --> '%s' == %s\n", pUrl, pBuffer, ok ? "OK" : "FAIL"));
+}
+
+int main(int argc, char **argv)
+{
+	int i = 2;
+	int c;
+
+#ifdef DEBUG_WLOGIT
+	curlLogItSet(&logit);
+#endif
+
+	if(argc == 1)
+	{
+		printf("%s: [-d] [-1 [url] [optional post vars]]\n", argv[0]);
+		exit(0);
+	}
+
+	while(i < argc)
+	{
+		if(argv[i][0] == '-')
+		{
+			switch(argv[i][1])
+			{
+				case 'd': debug = 1; i++; break;
+				case '1': i++; test1(argc-i, argv+i); i += 2; break;
+				case '2': i++; test2(argc-i, argv+i); i += 2; break;
+				default: i++; break;
+			}
+		}
+		else
+			i++;
+	}
 
 	return 0;
 }

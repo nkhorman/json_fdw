@@ -27,10 +27,11 @@
 /* Defines for valid option names and default values */
 #define OPTION_NAME_FILENAME "filename"
 #define OPTION_NAME_MAX_ERROR_COUNT "max_error_count"
-#define OPTION_NAME_HDFS_DIRECTORY_PATH "hdfs_directory_path"
 #define DEFAULT_MAX_ERROR_COUNT 0
 
 #define OPTION_NAME_HTTP_POST_VARS "http_post_vars"
+#define OPTION_NAME_ROM_URL "rom_url"
+#define OPTION_NAME_ROM_PATH "rom_path"
 
 #define JSON_TUPLE_COST_MULTIPLIER 10
 #define ERROR_BUFFER_SIZE 1024
@@ -53,19 +54,6 @@ typedef struct JsonValidOption
 } JsonValidOption;
 
 
-/* Array of options that are valid for json_fdw */
-static const JsonValidOption ValidOptionArray[] =
-{
-	/* foreign table options */
-	{ OPTION_NAME_FILENAME, ForeignTableRelationId },
-	{ OPTION_NAME_MAX_ERROR_COUNT, ForeignTableRelationId },
-	{ OPTION_NAME_HDFS_DIRECTORY_PATH, ForeignTableRelationId },
-	{ OPTION_NAME_HTTP_POST_VARS, ForeignTableRelationId },
-};
-// Never maintain by hand, what the compiler could do for you
-static const uint32 ValidOptionCount = (sizeof(ValidOptionArray)/sizeof(ValidOptionArray[0]));
-
-
 /*
  * JsonFdwOptions holds the option values to be used when reading and parsing
  * the json file. To resolve these values, we first check foreign table's 
@@ -74,10 +62,11 @@ static const uint32 ValidOptionCount = (sizeof(ValidOptionArray)/sizeof(ValidOpt
  */
 typedef struct JsonFdwOptions
 {
-	char *filename;
+	char const *filename;
 	int32 maxErrorCount;
-	const char *pHttpPostVars;
-
+	char const *pHttpPostVars;
+	char const *pRomUrl;
+	char const *pRomPath;
 } JsonFdwOptions;
 
 
@@ -87,7 +76,7 @@ typedef struct JsonFdwOptions
  */
 typedef struct JsonFdwExecState
 {
-	char *filename;			// on disk file name of json content
+	char const *filename;		// on disk file name of json content
 	FILE *filePointer;		// file pointer to on disk content
 	void *gzFilePointer;		// gz file pointe to on disk content
 
@@ -108,6 +97,7 @@ typedef struct _jfmes_t
 	List *retrieved_attrs;		// list of target attribute members
 	List *retrieved_names;		// list of target attribute names
 	List *table_options;
+	char const *pUrl;		// put url
 
 	MemoryContext temp_cxt;		// context for per-tuple temp data
 

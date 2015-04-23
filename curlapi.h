@@ -63,11 +63,15 @@ typedef struct _cfr_t
 	unsigned long queryDuration;
 } cfr_t; // "CurlFetchResult_Type"
 
-cfr_t *curlFetch(const char *pUrl, const char *pHttpPostVars);
+cfr_t *curlFetchFile(const char *pUrl, const char *pHttpPostVars);
+void curlPost(const char *pUrl, const char *pHttpPostVars);
 void curlCfrFree(cfr_t *pCfr);
+
+int curlPut(const char *pUrl, const char *pBuffer, size_t bufferSize, const char *pContentType);
 
 #ifdef DEBUG_WLOGIT
 void curlLogItSet(void (*pfn)(const char *));
+static void curlLogIt(const char *pFmt, ...);
 #endif
 
 #endif

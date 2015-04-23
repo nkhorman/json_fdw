@@ -26,12 +26,16 @@ release.
 Building
 --------
 
-json\_fdw depends on yajl-2.0 for parsing, and zlib-devel to read compressed
+json\_fdw depends on yajl-2.1/json_path for parsing, and zlib-devel to read compressed
 files, and libcurl to fetch files from http servers.
 So we need to install these packages first:
 
 **Note**: The following intructions have not been updated to reflect the libcurl dependancy.
 You'll need to adjust accordingly.
+
+**Note**: The following intructions have not been updated to reflect the yajl library dependancy change.
+You'll need to get the forked yajl and use the json_path branch from http://github.com/nkhorman/yajl
+Do not use the lloyd/yajl, it won't compile!
 
     ## Fedora 17+
     sudo yum install zlib-devel yajl-devel
@@ -203,6 +207,82 @@ operation are preformed in a single step, create the table as below.
     )
     SERVER json_server
     OPTIONS (filename 'http://examples.citusdata.com/customer_reviews_nested_1998.json.gz');
+
+
+Additionally, as of 1.3, remote operations supporting SQL Insert have been added.
+The additional table options \`\`rom_url'' and \`\`rom_path'' are required for operations
+other than Select. Use of these two options are mutually exlusive to the \`\`filename'' and 
+\`\`http_post_vars'' table options.
+
+Rather than add additional table options for differing operations, ie select, insert, etc.,
+which necessitate table destruction and re-creation to change, a more felexible approch was
+taken by using a json object to describe the operational characteristics. This json object
+should be stored on the remote source where the data is sourced and operations actually take place,
+which is what the \`\`rom_url'' option is used for.
+
+An example ROM (Remote Operations Mapping) json object follows;
+
+    {
+    	"romschema": "2",
+    	"host": "",
+    	"url": "/some/uri/path",
+    
+    	"rom_path_1":
+    	{
+    		"url": "/",
+    		"select":{
+    			"method": "get",
+    			"url": "/",
+    			"query": [ {"name":"mode", "value":"multi-doc"}, {"name":"t", "value":3} ]
+    		},
+    		"insert":{
+    			"method": "put",
+    			"url": "/",
+    			"query": [ {"name":"t", "value":4} ]
+    			},
+    		"update":{
+    			"method": "put",
+    			"url": "/",
+    			"query": [ {"name":"mode", "value":"multi-doc"}, {"name":"t", "value":3} ]
+    		}
+    	},
+	"rom_path_other":
+	{
+		"select":{
+			"method":"get",
+			"query": [ {"name":"other", "value":"foo"} ]
+		}
+	}
+    }
+
+The "url" string elements specified inside a given rom_path and or rom_path operation,
+are optional, and if specified as "/", will effectively be ignored. Each of the "query"
+arrayed object elements are concatenated with the effective "url" as request key value
+pairs. So for example, given the following table options;
+
+    (rom_url 'http://www.example.com/object/rom.json', rom_path 'rom_path_1')
+
+and an SQL Select operation, the following url will be used;
+
+    http://www.example.com/some/uri/path/?mode=multi-doc&t=3
+
+as the fetch url for content to be retreived, as if it has been used in the \`\`filename''
+table option.
+
+The "host" string element at the root of the ROM is used to prepend the "url" string element.
+If specfied as;
+
+    http://api.example.com:8080
+
+
+Then an SQL Select operation would use the following url;
+
+    http://api.example.com:8080/some/uri/path/?mode=multi-doc&t=3
+
+**Note:** Only http based operations are supported for ROM actions. Also, presently, "get"
+is the only method supported for Select operations, and only "put" is supported for
+Insert, and Update operations.
+
 
 
 Table Schema Conventions
