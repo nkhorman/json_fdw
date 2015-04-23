@@ -617,7 +617,7 @@ static size_t curlPutReadFnCallback(char *buffer, size_t size, size_t nmemb, voi
 static size_t curlPutHeaderFnCallback(void *buffer, size_t size, size_t nmemb, void *userp)
 {	int curl_size = nmemb * size;
 
-	printf("%s:%d header '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
+	//printf("%s:%d header '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
 
 	return curl_size;
 }
@@ -625,7 +625,7 @@ static size_t curlPutHeaderFnCallback(void *buffer, size_t size, size_t nmemb, v
 static size_t curlPutWriteFnCallback(void *buffer, size_t size, size_t nmemb, void *userp)
 {	int curl_size = nmemb * size;
 
-	printf("%s:%d '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
+	//printf("%s:%d '%*.*s'\n", __func__, __LINE__, curl_size-2, curl_size-2, buffer);
 
 	return curl_size;
 }
@@ -796,9 +796,9 @@ int curlPut(const char *pUrl, const char *pBuffer, size_t bufferSize, const char
 	CURL *curl_handle = curlCoreInitPut(pUrl, &curlPutReadFnCallback, &cprfc, NULL, NULL, cprfc.len);
 	struct curl_slist *chunk = curlCoreInitHeader(curl_handle, NULL, "Content-Type", pContentType);
 
-	printf("%s:%d\n", __func__, __LINE__);
+	//printf("%s:%d\n", __func__, __LINE__);
 	res = curl_easy_perform(curl_handle);
-	printf("%s:%d\n", __func__, __LINE__);
+	//printf("%s:%d\n", __func__, __LINE__);
 
 	// this means that we communicated with the server
 	if(res == CURLE_OK)

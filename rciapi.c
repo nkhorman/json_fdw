@@ -168,7 +168,7 @@ rci_t *rciFetch(char const *pRomUrl, char const *pRomPath, int action)
 				{
 					pStrName = ytp_get(rootQuery, i+1, "name", NULL);
 					pStrValue = ytp_get(rootQuery, i+1, "value", NULL);
-					printf("%s:%d i %u name '%s' value '%s'\n", __func__, __LINE__, i, pStrName, pStrValue);
+					//printf("%s:%d i %u name '%s' value '%s'\n", __func__, __LINE__, i, pStrName, pStrValue);
 					if(
 						pStrName != NULL && *pStrName
 						&& pStrValue != NULL && *pStrValue
