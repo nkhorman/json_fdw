@@ -214,11 +214,13 @@ The additional table options \`\`rom_url'' and \`\`rom_path'' are required for o
 other than Select. Use of these two options are mutually exlusive to the \`\`filename'' and 
 \`\`http_post_vars'' table options.
 
-Rather than add additional table options for differing operations, ie select, insert, etc.,
-which necessitate table destruction and re-creation to change, a more felexible approch was
-taken by using a json object to describe the operational characteristics. This json object
-should be stored on the remote source where the data is sourced and operations actually take place,
-which is what the \`\`rom_url'' option is used for.
+Rather than add additional table options for differing operations, ie Select, Insert, etc.,
+which necesitate table destruction and re-creation to change, a more flexible approach was
+taken by using a json object to describe the operational characteristics. The locations of
+the json object is specified by the \`\`rom_url'' option.
+
+The \`\`rom_path'' option is used to specify which operation set to use. ie. the name of
+the table be operated on.
 
 An example ROM (Remote Operations Mapping) json object follows;
 
@@ -255,14 +257,17 @@ An example ROM (Remote Operations Mapping) json object follows;
 	}
     }
 
-The "url" string elements specified inside a given rom_path and or rom_path operation,
-are optional, and if specified as "/", will effectively be ignored. Each of the "query"
-arrayed object elements are concatenated with the effective "url" as request key value
-pairs. So for example, given the following table options;
+The "romschema" value of 2 is fixed, used as the only schema validation of the ROM.
+
+The "url" string elements specified inside a given rom_path and or rom_path operation, are
+optional, and if specified as "/", will be ignored, however, if present, will be used to
+create the effective url. Each of the "query" arrayed object elements are concatenated with
+the effective url as request key value pairs. So for example, given the following table options;
 
     (rom_url 'http://www.example.com/object/rom.json', rom_path 'rom_path_1')
 
-and an SQL Select operation, the following url will be used;
+and an SQL Select operation with the rom_url pointing to the exampe rom above, the following
+url will be used;
 
     http://www.example.com/some/uri/path/?mode=multi-doc&t=3
 
