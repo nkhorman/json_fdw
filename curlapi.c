@@ -97,8 +97,7 @@ static cmd5_t *curlMd5Init(void)
 // Free an MD5 object
 static void curlMd5Free(cmd5_t *pMd5)
 {
-	if(pMd5 != NULL)
-		free(pMd5);
+	FREEPTR(pMd5);
 }
 
 static void curlMd5Hash(cmd5_t *pMd5, const char *pStr)
@@ -122,45 +121,6 @@ static char *curlMd5Final(cmd5_t *pMd5)
 
 	return strdup(pMd5->ascii);
 }
-
-/*
-// Create an MD5 hash vprintf style
-// The caller must free the resultant string pointer
-static char *curlAsciiMd5HashV(const char *pFmt, va_list vl)
-{	char *pHashStr = NULL;
-	char *pSrc = NULL;
-
-	vasprintf(&pSrc, pFmt, vl);
-
-	// hash it
-	if(pSrc != NULL)
-	{	cmd5_t *pMd5 = curlMd5Init();
-
-		if(pMd5 != NULL)
-		{
-			curlMd5Hash(pMd5, pSrc);
-			pHashStr = curlMd5Final(pMd5);
-			curlMd5Free(pMd5);
-		}
-		free(pSrc);
-	}
-
-	return pHashStr;
-}
-
-// Create an MD5 hash printf style
-// The caller must free the resultant string pointer
-static char *curlAsciiMd5Hash(const char *pFmt, ...)
-{	va_list vl;
-	char *pStr = NULL;
-
-	va_start(vl, pFmt);
-	pStr = curlAsciiMd5HashV(pFmt, vl);
-	va_end(vl);
-
-	return pStr;
-}
-*/
 
 // Callback from CURL to write contents to disk
 static size_t curlWriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
@@ -186,14 +146,6 @@ static char *curlHeaderCallbackMatch(const char *pSrc, size_t srcLen, const char
 		// right trim
 		while(*pl == ' ' || *pl == '\t' || *pr == '\n' || *pr == '\r')
 			pr--;
-
-		/*
-		// remove lead / trailing quote pair
-		if(*pl == '"' && *pr == '"')
-			{ pl++; pr--; }
-		if(*pl == '\'' && *pr == '\'')
-			{ pl++; pr--; }
-		*/
 
 		if(pr>pl)
 		{	int l = pr-pl+1;
@@ -259,7 +211,7 @@ static void curlCacheFileOpen(ccf_t *pCcf)
 	// make sure we can store our files
 	mkdir(CURL_BASE_DIR, 0755);
 
-	// create a temporary file, for a possible use later
+	// create a temporary file, for possible use later
 	memset(tmpfnamebuf, 0, sizeof(tmpfnamebuf));
 	sprintf(tmpfnamebuf, "%s/tmpXXXXXXXXXX", CURL_BASE_DIR);
 
@@ -324,8 +276,9 @@ static bool curlIsUrl(const char *pUrl, ccf_t *pCcf)
 	return bIsUrl;
 }
 
-// Encode some html form Post data
-static char *curlEncodePostData(const char *src)
+// Returns a url character encoded string
+// The caller must free() the result
+static char *curlEncodeUrlCharacters(const char *src)
 {	char *dst = (src != NULL ? calloc(1,strlen(src)*3) : NULL);
 	char *str = dst;
 
@@ -335,10 +288,10 @@ static char *curlEncodePostData(const char *src)
 		while(*src)
 		{
 			// http://en.wikipedia.org/wiki/Percent-encoding#Character_data plus a few more
-			if((eq > 0 && *src == '=') || strchr("\"%-.<>\\^_`{|}~[],:#@?;\r\n", *src))
+			if((eq != 0 && *src == '=') || strchr("\"%-.<>\\^_`{|}~[],:#@?;\r\n", *src))
 			{	char c = *src;
 
-				eq += (*src == '=');
+				eq = (*src == '=');
 
 				*(dst++) = '%';
 				*(dst++) = hexDigits[c >> 4];
@@ -347,7 +300,11 @@ static char *curlEncodePostData(const char *src)
 			else if(*src == ' ')
 				*(dst++) = '+';
 			else
+			{
+				if(*src == '&')
+					eq = 0;
 				*(dst++) = *src;
+			}
 			src++;
 		}
 	}
@@ -565,7 +522,7 @@ static CURL *curlCoreInit(const char *pUrl, void *pHeaderFn, void *pHeaderData)
 	curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L); // turn on redirection following
 	curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 5); // for a maximum of 5
 	curl_easy_setopt(curl_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL); // maintain a post as a post on redirects
-	curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn one Refer when redirecting
+	curl_easy_setopt(curl_handle, CURLOPT_AUTOREFERER, 1L); // turn on Refer when redirecting
 
 	if(pHeaderFn != NULL)
 	{
@@ -643,20 +600,12 @@ static CURL *curlCoreInitPut(const char *pUrl, void *pReadFn, void *pReadData, v
 	curl_easy_setopt(curl_handle, CURLOPT_UPLOAD, 1L);
 	curl_easy_setopt(curl_handle, CURLOPT_INFILESIZE_LARGE, (curl_off_t)size);
 
+	// don't let output go to stdout
 	curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, &curlPutWriteFnCallback);
 	curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, NULL);
 
 	curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, &curlPutHeaderFnCallback);
 	curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, NULL);
-
-	/*
-	if(pPostStr != NULL && *pPostStr)
-	{
-		curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
-		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, pPostStr);
-		curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, strlen(pPostStr));
-	}
-	*/
 
 	return curl_handle;
 }
@@ -677,6 +626,7 @@ void curlCoreInitAuth(CURL *curl_handle)
 }
 */
 
+// Add a header to the header list
 static struct curl_slist *curlCoreInitHeader(CURL *curl_handle, struct curl_slist *pChunk, const char *pName, const char *pValue)
 {	char *pHdr = NULL;
 
@@ -701,7 +651,7 @@ cfr_t *curlFetchFile(const char *pUrl, const char *pHttpPostVars)
 	if(pCfr != NULL)
 	{	struct curl_slist *chunk = NULL;
 		CURLcode res;
-		char *pPostStr = curlEncodePostData(pHttpPostVars);
+		char *pPostStr = curlEncodeUrlCharacters(pHttpPostVars);
 		CURL *curl_handle = curlCoreInitGetOrPost(pUrl, curlWriteCallback, (void *)&pCfr->ccf, curlHeaderCallback, (void *)&pCfr->ccf, pPostStr);
 		unsigned long queryStart = 0;
 
@@ -722,8 +672,7 @@ cfr_t *curlFetchFile(const char *pUrl, const char *pHttpPostVars)
 		pCfr->queryDuration = GetTickCount() - queryStart; // how long did the fetch take ?
 
 		// clean up post data
-		if(pPostStr != NULL)
-			free(pPostStr);
+		FREEPTR(pPostStr);
 
 		// close the open file
 		curlCfrClose(pCfr);
@@ -796,17 +745,13 @@ int curlPut(const char *pUrl, const char *pBuffer, size_t bufferSize, const char
 	CURL *curl_handle = curlCoreInitPut(pUrl, &curlPutReadFnCallback, &cprfc, NULL, NULL, cprfc.len);
 	struct curl_slist *chunk = curlCoreInitHeader(curl_handle, NULL, "Content-Type", pContentType);
 
-	//printf("%s:%d\n", __func__, __LINE__);
 	res = curl_easy_perform(curl_handle);
-	//printf("%s:%d\n", __func__, __LINE__);
 
 	// this means that we communicated with the server
 	if(res == CURLE_OK)
-	{
-		unsigned long httpResponseCode = 0;
+	{	unsigned long httpResponseCode = 0;
 
 		curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &httpResponseCode);
-
 		ok = (httpResponseCode == 200);
 	}
 
@@ -880,12 +825,22 @@ void test2(int argc, char **argv)
 
 	ok = curlPut(pUrl, pBuffer, strlen(pBuffer), "application/json");
 
-	printf("'%s' --> '%s' == %s\n", pUrl, pBuffer, ok ? "OK" : "FAIL"));
+	printf("'%s' --> '%s' == %s\n", pUrl, pBuffer, (ok ? "OK" : "FAIL"));
+}
+
+void test3(int argc, char **argv)
+{
+	const char *pStrIn = "a=1&b=2&json={\"query\":[[3,0,0]]}&d=4";
+	char *pStrOut = curlEncodeUrlCharacters(pStrIn);
+
+	printf("in '%s' out '%s'\n", pStrIn, pStrOut);
+
+	free(pStrOut);
 }
 
 int main(int argc, char **argv)
 {
-	int i = 2;
+	int i = 1;
 	int c;
 
 #ifdef DEBUG_WLOGIT
@@ -905,9 +860,10 @@ int main(int argc, char **argv)
 			switch(argv[i][1])
 			{
 				case 'd': debug = 1; i++; break;
-				case '1': i++; test1(argc-i, argv+i); i += 2; break;
-				case '2': i++; test2(argc-i, argv+i); i += 2; break;
-				default: i++; break;
+				case '1': test1(argc-i, argv+i); i += 2; break;
+				case '2': test2(argc-i, argv+i); i += 2; break;
+				case '3': test3(argc-i, argv+i); i++; break;
+				default: i++; printf("unknown cli arg '%s'\n", argv[i]); break;
 			}
 		}
 		else
