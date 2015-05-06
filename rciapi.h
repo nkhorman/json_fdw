@@ -81,6 +81,7 @@ typedef struct _rci_t
 	char *pUrl; // must be free()'d
 	char *pQuery; // must be free()'d
 	char const *pMethod;
+	char const *pAction; // must be freed()'d
 	yajl_val romRoot; // must be yajl_free()'d
 	yajl_val romRootAction; // do not yajl_free(), is subnode of romRoot
 } rci_t; // Rom Context Info Type;

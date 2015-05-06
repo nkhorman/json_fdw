@@ -80,6 +80,8 @@ void rciFree(rci_t *pRci)
 			free(pRci->pUrl);
 		if(pRci->pQuery != NULL)
 			free(pRci->pQuery);
+		if(pRci->pAction != NULL)
+			free(pRci->pAction);
 		if(pRci->romRoot != NULL)
 			yajl_tree_free(pRci->romRoot);
 		free(pRci);
@@ -114,15 +116,16 @@ rci_t *rciFetch(char const *pRomUrl, char const *pRomPath, int action)
 		// the schema has already been validated
 		if(pRci->romRoot != NULL && action != RCI_ACTION_NONE)
 		{
-			char const *pAction = (action == RCI_ACTION_INSERT ? "insert"
+			yajl_val rootTable = ytp_get(pRci->romRoot, pRomPath, NULL);
+			yajl_val rootQuery;
+
+			pRci->pAction = strdup(action == RCI_ACTION_INSERT ? "insert"
 				: action == RCI_ACTION_UPDATE ? "update"
 				: action == RCI_ACTION_DELETE ? "delete"
 				: "select"
 				);
-			yajl_val rootTable = ytp_get(pRci->romRoot, pRomPath, NULL);
-			yajl_val rootQuery;
 
-			pRci->romRootAction = ytp_get(rootTable, pAction, NULL);
+			pRci->romRootAction = ytp_get(rootTable, pRci->pAction, NULL);
 			pRci->pMethod = ytp_get(pRci->romRootAction, "method", NULL);
 			pRci->pUrl = strcatr(NULL, ytp_GetPath(pRci->romRoot, "$.host"));
 
