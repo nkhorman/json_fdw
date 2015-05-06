@@ -295,7 +295,7 @@ JsonGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 
 	double outputRowCount = clamp_row_est(tupleCount * rowSelectivity);
 	baserel->rows = outputRowCount;
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
 
 
@@ -335,7 +335,7 @@ JsonGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 								   NIL); // no fdw_private
 
 	add_path(baserel, foreignScanPath);
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
 
 
@@ -373,7 +373,7 @@ JsonGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 					   NIL, // no expressions to evaluate
 					   foreignPrivateList);
 
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	return foreignScan;
 }
 
@@ -398,11 +398,71 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 		int statResult = stat(options->filename, &statBuffer);
 		if (statResult == 0)
 		{
-			ExplainPropertyLong("Json File Size", (long) statBuffer.st_size, 
+			ExplainPropertyLong("Json File Size", (long) statBuffer.st_size,
 								explainState);
 		}
 	}
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+}
+
+static int rciMethod(rci_t *pRci, char const *pMethod, char const *pRomUrl, char const *pRomPath)
+{	int methodOk = 0;
+
+	if(pRci != NULL)
+	{
+		if(pRci->pMethod != NULL)
+		{
+			// special case, (pMethod == NULL) means any method
+			methodOk = (pMethod != NULL ? (strcasecmp(pRci->pMethod, pMethod) == 0) : 1);
+			if(!methodOk)
+			{
+				ereport(ERROR, (errmsg("Method not supported."),
+					errhint("URL '%s' path '%s' operation '%s' method '%s'"
+						, pRomUrl
+						, pRomPath
+						, pRci->pAction
+						, pRci->pMethod
+						)));
+			}
+		}
+		else
+		{
+			ereport(ERROR, (errmsg("Method not specified for ROM path operation."),
+				errhint("URL '%s' path '%s' operation '%s'", pRomUrl, pRomPath, pRci->pAction)));
+		}
+	}
+
+	return methodOk;
+}
+
+static int rciError(rci_t *pRci, char const *pRomUrl, char const *pRomPath)
+{	int error = 1;
+
+	if(pRci != NULL)
+	{
+		if(pRci->romRoot != NULL)
+		{
+			if(pRci->romRootAction != NULL)
+				error = 0;
+			else
+			{
+				ereport(ERROR, (errmsg("Path does not support operation."),
+					errhint("URL '%s' path '%s' operation '%s'", pRomUrl, pRomPath, pRci->pAction)));
+			}
+		}
+		else
+		{
+			ereport(ERROR, (errmsg("Invalid rom_path."),
+				errhint("URL '%s' path '%s'", pRomUrl, pRomPath)));
+		}
+	}
+	else
+	{
+		ereport(ERROR, (errmsg("Unable to access ROM."),
+			errhint("URL '%s' path '%s'", pRomUrl, pRomPath)));
+	}
+
+	return error;
 }
 
 /*
@@ -429,7 +489,7 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	const char *postVars = NULL;
 	cfr_t *pCfr = NULL;
 
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 
 	// if Explain with no Analyze, do nothing
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -449,7 +509,6 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	filename = options->filename;
 	postVars = options->pHttpPostVars;
 
-// BKMRK
 	// if a ROM is specified, get/build an off box url
 	if(options->pRomUrl != NULL && *options->pRomUrl
 		&& options->pRomPath != NULL && *options->pRomPath
@@ -457,47 +516,23 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	{
 		rci_t *pRci = rciFetch(options->pRomUrl, options->pRomPath, RCI_ACTION_SELECT);
 
-		if(pRci != NULL)
+		//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+		if(!rciError(pRci, options->pRomUrl, options->pRomPath)
+			&& rciMethod(pRci, "get", options->pRomUrl, options->pRomPath)
+			)
 		{
-			if(strcasecmp(pRci->pMethod, "get") == 0)
-			{
-				filename = pstrdup(pRci->pUrl); // dupe the url
-				postVars = NULL;
-			}
-			/* TODO ?
-			else if(strcasecmp(pRci->pMethod, "post") == 0)
-			{
-				ListCell *lc;
-
-				// create postVars from "where" clause
-				// and ROM qualifications
-
-				foreach(lc, columnList)
-				{
-					Var *column = (Var *) lfirst(lc);
-					AttrNumber columnId = column->varattno;
-					char *columnName = get_relid_attribute_name(foreignTableId, columnId);
-					Oid columnType = get_atttype(foreignTableId, columnId);
-
-					ELog(DEBUG1, "%s:%d columnName '%s'", __func__, __LINE__, columnName);
-				}
-				filename = pstrdup(pRci->pUrl); // dupe the url
-				postVars = NULL;
-			}
-			*/
-			rciFree(pRci);
+			filename = pstrdup(pRci->pUrl); // dupe the url
+			postVars = NULL;
 		}
-		else
-		{
-			ereport(ERROR, (errmsg("Unable to access ROM"), 
-							errhint("URL '%s' path '%s'", options->pRomUrl, options->pRomPath)));
-		}
+		rciFree(pRci);
 	}
 
 	// See if this is an off box url, and try to fetch it
 	// and then pass it off to one of the native file handlers
 	if(filename != NULL && *filename)
 		pCfr = curlFetchFile(filename, postVars);
+	else
+		openError = 1;
 
 	// if fetched
 	if(pCfr != NULL)
@@ -507,16 +542,18 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 			// replace the url with the on box filename of the file that we just
 			// downloaded so that the existing file handlers can just use a file
 			filename = pCfr->ccf.pFileName;
-		ELog(DEBUG1, "%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
-			, __func__, __LINE__
-			, pCfr->bFileFetched
-			, pCfr->queryDuration
-			, pCfr->httpResponseCode
-			, pCfr->pContentType
-			);
+			/*
+			ELog(DEBUG1, "%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
+				, __func__, __LINE__
+				, pCfr->bFileFetched
+				, pCfr->queryDuration
+				, pCfr->httpResponseCode
+				, pCfr->pContentType
+				);
+			*/
 	}
 
-	if(!openError)
+	if(!openError && filename != NULL && *filename)
 	{
 		gzipFile = GzipFilename(filename);
 		hdfsBlock = HdfsBlockName(filename);
@@ -533,17 +570,17 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 		}
 	}
 
-	if (openError)
+	if(openError || filename == NULL || !*filename)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not open file \"%s\" for reading: %m",
-							   options->filename)));
+							   filename)));
 		curlCfrFree(pCfr);
 		pCfr = NULL;
 	}
 
 	execState = (JsonFdwExecState *) palloc(sizeof(JsonFdwExecState));
-	execState->filename = options->filename;
+	execState->filename = filename;
 	execState->filePointer = filePointer;
 	execState->gzFilePointer = gzFilePointer;
 	execState->columnMappingHash = columnMappingHash;
@@ -579,7 +616,7 @@ JsonIterateForeignScan(ForeignScanState *scanState)
 	bool *columnNulls = tupleSlot->tts_isnull;
 	int columnCount = tupleDescriptor->natts;
 
-//	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	// initialize all values for this row to null
 	memset(columnValues, 0, columnCount * sizeof(Datum));
 	memset(columnNulls, true, columnCount * sizeof(bool));
@@ -641,7 +678,7 @@ JsonIterateForeignScan(ForeignScanState *scanState)
 static void
 JsonReScanForeignScan(ForeignScanState *scanState)
 {
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	JsonEndForeignScan(scanState);
 	JsonBeginForeignScan(scanState, 0);
 }
@@ -655,7 +692,7 @@ static void
 JsonEndForeignScan(ForeignScanState *scanState)
 {
 	JsonFdwExecState *executionState = (JsonFdwExecState *) scanState->fdw_state;
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	if (executionState == NULL)
 	{
 		return;
@@ -1482,7 +1519,7 @@ JsonAnalyzeForeignTable(Relation relation,
 	struct stat statBuffer;
 
 	int statResult = stat(options->filename, &statBuffer);
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	if (statResult < 0)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
@@ -1547,7 +1584,7 @@ JsonAcquireSampleRows(Relation relation, int logLevel,
 
 	// create list of columns of the relation
 	int columnIndex = 0;
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		Var *column = (Var *) palloc0(sizeof(Var));
@@ -1679,7 +1716,6 @@ JsonAcquireSampleRows(Relation relation, int logLevel,
 }
 
 // *** All the stuff below here, was broken by Neal Horman ;)
-// BKMRK
 static char *JsonAttributeNameGet(int varno, int varattno, PlannerInfo *root)
 {
 	RangeTblEntry *rte = planner_rt_fetch(varno, root);
@@ -1718,8 +1754,6 @@ static List *JsonPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index r
 	RangeTblEntry	*rte = planner_rt_fetch(resultRelation, root);
 	Relation	rel = heap_open(rte->relid, NoLock);
 	ForeignTable	*table = GetForeignTable(RelationGetRelid(rel));
-	//ForeignServer	*server = GetForeignServer(table->serverid);
-
 	char		*tableName = RelationGetRelationName(rel);
 	List		*targetAttrs = NULL;
 	List		*targetNames = NULL;
@@ -1737,43 +1771,38 @@ static List *JsonPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index r
 		DefElem *def = (DefElem *) lfirst(lc);
 		const char *str = defGetString(def);
 
-		ELog(DEBUG1, "%s:%d '%s' --> '%s'", __func__, __LINE__, def->defname, str);
+		//ELog(DEBUG1, "%s:%d '%s' --> '%s'", __func__, __LINE__, def->defname, str);
 		if(strcasecmp(def->defname, OPTION_NAME_ROM_URL) == 0)
 			pRomUrl = str;
 		else if(strcasecmp(def->defname, OPTION_NAME_ROM_PATH) == 0)
 			pRomPath = str;
 	}
 
-	ELog(DEBUG1, "%s:%d table name '%s'", __func__, __LINE__, tableName);
+	//ELog(DEBUG1, "%s:%d table name '%s'", __func__, __LINE__, tableName);
 
 	// fetch the ROM
 	pRci = rciFetch(pRomUrl, pRomPath, 
-		(
+			(
 			operation == CMD_INSERT ? RCI_ACTION_INSERT :
 			operation == CMD_UPDATE ? RCI_ACTION_UPDATE :
 			//operation == CMD_DELETE ? RCI_ACTION_DELETE :
 			RCI_ACTION_NONE
-		)
+			)
 		);
-	if(pRci != NULL)
-	{
-		if(strcasecmp(pRci->pMethod, "put") == 0)
-		{
-			appendStringInfoString(&strUrl, pRci->pUrl);
-			ELog(DEBUG1, "%s:%d url '%s'\n", __func__, __LINE__, strUrl.data);
-		}
-	}
-	else
-	{
-		ereport(ERROR, (errmsg("Unable to access ROM"), 
-						errhint("URL '%s' path '%s'", pRomUrl, pRomPath)));
-	}
 
+	if(!rciError(pRci, pRomUrl, pRomPath)
+		&& rciMethod(pRci, "put", pRomUrl, pRomPath)
+		)
+	{
+		appendStringInfoString(&strUrl, pRci->pUrl);
+		//ELog(DEBUG1, "%s:%d url '%s'", __func__, __LINE__, strUrl.data);
+	}
 	rciFree(pRci);
 
 	switch (operation)
 	{
 		case CMD_INSERT:
+		case CMD_UPDATE:
 			{
 				TupleDesc tupdesc = RelationGetDescr(rel);
 				int attnum;
@@ -1813,7 +1842,7 @@ static void JsonBeginForeignModify(
 	int eflags
 	)
 {
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 
 	if(!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 	{
@@ -1821,17 +1850,13 @@ static void JsonBeginForeignModify(
 		Oid typefnoid = InvalidOid;
 		bool isvarlena = false;
 		ListCell *lc = NULL;
-
 		EState *estate = mtstate->ps.state;
 		Relation rel = resultRelInfo->ri_RelationDesc;
 		Oid foreignTableId = RelationGetRelid(rel);
-		//RangeTblEntry *rte = rt_fetch(resultRelInfo->ri_RangeTableIndex, estate->es_range_table);
-		//Oid userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
 		ForeignTable *table = GetForeignTable(foreignTableId);
-		//ForeignServer *server = GetForeignServer(table->serverid);
-		//UserMapping *user = GetUserMapping(userid, server->serverid);
 		jfmes_t *pJfmes = (jfmes_t *) palloc0(sizeof(jfmes_t));
 
+		//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 		if(pJfmes != NULL)
 		{
 			pJfmes->rel = rel;
@@ -1853,6 +1878,7 @@ static void JsonBeginForeignModify(
 				ALLOCSET_SMALL_MAXSIZE
 				);
 
+			//ELog(DEBUG1, "%s:%d put url '%s'", __func__, __LINE__, pJfmes->pUrl);
 			// collect accessor functions for each attribute
 			foreach(lc, pJfmes->retrieved_attrs)
 			{
@@ -1864,6 +1890,7 @@ static void JsonBeginForeignModify(
 				getTypeOutputInfo(attr->atttypid, &typefnoid, &isvarlena);
 				fmgr_info(typefnoid, &pJfmes->p_flinfo[pJfmes->p_nums]);
 				pJfmes->p_nums++;
+				//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 			}
 			Assert(pJfmes->p_nums <= n_params);
 		}
@@ -1872,8 +1899,6 @@ static void JsonBeginForeignModify(
 	}
 }
 
-
-// BKMRK
 static int JsonPg2Json(StringInfo Str, Oid type, Datum value, const char *name, bool *isnull);
 
 static TupleTableSlot *JsonExecForeignInsert(
@@ -1886,17 +1911,6 @@ static TupleTableSlot *JsonExecForeignInsert(
 	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
 	MemoryContext oldContext = MemoryContextSwitchTo(pJfmes->temp_cxt);
 	int nParams = list_length(pJfmes->retrieved_attrs);
-	/*
-	ListCell	*lc;
-
-	foreach(lc, pJfmes->table_options)
-	{
-		DefElem *def = (DefElem *) lfirst(lc);
-		const char *str = defGetString(def);
-
-		ELog(DEBUG1, "%s:%d '%s' --> '%s'", __func__, __LINE__, def->defname, str);
-	}
-	*/
 
 	if(nParams == list_length(pJfmes->retrieved_names))
 	{
@@ -1905,17 +1919,15 @@ static TupleTableSlot *JsonExecForeignInsert(
 		ListCell *lcNames = list_head(pJfmes->retrieved_names);
 		StringInfoData str;
 		int paramNum = 0;
+		int paramCount = 0;
 		int ok = 0;
 
-		//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
-
-		// collect attribute isnull info so that we know
-		// if we need to append another attribute when
-		// building the json string
+		// count the number of non-null attributes
 		foreach(lcAttrs, pJfmes->retrieved_attrs)
 		{
-			int attnum = lfirst_int(lcAttrs) - 1;
-			slot_getattr(slot, attnum + 1, &isnull[attnum]);
+			bool bIsNull = true;
+			slot_getattr(slot, lfirst_int(lcAttrs), &bIsNull);
+			paramCount += (!bIsNull);
 		}
 
 		// build json object document string
@@ -1930,13 +1942,13 @@ static TupleTableSlot *JsonExecForeignInsert(
 			//ELog(DEBUG1, "%s:%d %u/%u %s %u", __func__, __LINE__, attnum, nParams, lfirst(lcNames), isnull[attnum]);
 			if(JsonPg2Json(&str, type, value, lfirst(lcNames), &isnull[attnum])
 				// if not last attribute
-				&& paramNum < nParams -1
-				&& !isnull[attnum+1]
+				&& paramNum < paramCount - 1
+				&& !isnull[attnum]
 			)
 			{
 				appendStringInfoString(&str, ", ");
+				paramNum++;
 			}
-			paramNum++;
 
 			lcNames = lnext(lcNames);
 		}
@@ -1945,7 +1957,7 @@ static TupleTableSlot *JsonExecForeignInsert(
 		// send the json object to the remote server
 		ok = curlPut(pJfmes->pUrl, str.data, strlen(str.data), "application/json");
 
-		ELog(DEBUG1, "%s:%d '%s' --> %s %s", __func__, __LINE__, str.data, pJfmes->pUrl, ok ? "OK" : "FAIL");
+		//ELog(DEBUG1, "%s:%d '%s' --> %s %s", __func__, __LINE__, str.data, pJfmes->pUrl, ok ? "OK" : "FAIL");
 	}
 
 	MemoryContextSwitchTo(oldContext);
@@ -1987,7 +1999,7 @@ static void JsonAddForeignUpdateTargets(Query *parsetree, RangeTblEntry *target_
 		true
 		);
 
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 	// ... and add it to the query's targetlist
 	parsetree->targetList = lappend(parsetree->targetList, tle);
 }
@@ -2000,43 +2012,48 @@ static TupleTableSlot * JsonExecForeignUpdate(
 	)
 {
 	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
-	Relation          rel = resultRelInfo->ri_RelationDesc;
-	Oid               foreignTableId = RelationGetRelid(rel);
-	bool              is_null = false;
-	ListCell          *lc = NULL;
-	int               bindnum = 0;
-	Oid               typeoid;
-	Datum             value = 0;
-	int               n_params = 0;
-	bool              *isnull = NULL;
-	int               i = 0;
+	int nParams = list_length(pJfmes->retrieved_attrs);
 
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
-
-	n_params = list_length(pJfmes->retrieved_attrs);
-
-	isnull = palloc0(sizeof(bool) * n_params);
-
-	// Bind the values
-	foreach(lc, pJfmes->retrieved_attrs)
+	if(nParams == list_length(pJfmes->retrieved_names))
 	{
-		int attnum = lfirst_int(lc);
-		Oid type;
+		bool *isnull = palloc0(sizeof(bool) * nParams);
+		ListCell *lcAttrs = NULL;
+		ListCell *lcNames = list_head(pJfmes->retrieved_names);
+		StringInfoData str;
+		int paramNum = 0;
+		int ok = 0;
 
-		// first attribute cannot be in target list attribute
-		if (attnum == 1)
-			continue;
+		//ELog(DEBUG1, "%s:%d nparams %u", __func__, __LINE__, nParams);
 
-		type = slot->tts_tupleDescriptor->attrs[attnum - 1]->atttypid;
-		value = slot_getattr(slot, attnum, (bool*)(&isnull[i]));
+		// build json object document string
+		initStringInfo(&str);
+		appendStringInfoString(&str, "{ ");
+		foreach(lcAttrs, pJfmes->retrieved_attrs)
+		{
+			Datum value = 0;
+			int attnum = lfirst_int(lcAttrs) - 1;
+			Oid type;
 
-		bindnum++;
-		i++;
+			type = slot->tts_tupleDescriptor->attrs[attnum]->atttypid;
+			value = slot_getattr(slot, attnum + 1, (bool*)(&isnull[attnum]));
+
+			if(JsonPg2Json(&str, type, value, lfirst(lcNames), &isnull[attnum])
+				// if not last attribute
+				&& paramNum < nParams -1
+				&& !isnull[attnum]
+			)
+			{
+				appendStringInfoString(&str, ", ");
+			}
+			lcNames = lnext(lcNames);
+			paramNum ++;
+		}
+		appendStringInfoString(&str, " }");
+
+		// send the json object to the remote server
+		ok = curlPut(pJfmes->pUrl, str.data, strlen(str.data), "application/json");
+		//ELog(DEBUG1, "%s:%d '%s' --> %s %s", __func__, __LINE__, str.data, pJfmes->pUrl, ok ? "OK" : "FAIL");
 	}
-
-	// Get the id that was passed up as a resjunk column
-	value = ExecGetJunkAttribute(planSlot, 1, &is_null);
-	typeoid = get_atttype(foreignTableId, 1);
 
 	return slot;
 }
@@ -2045,7 +2062,7 @@ static void JsonEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo)
 {
 	jfmes_t *pJfmes = (jfmes_t *) resultRelInfo->ri_FdwState;
 
-	ELog(DEBUG1, "%s:%d", __func__, __LINE__);
+	//ELog(DEBUG1, "%s:%d", __func__, __LINE__);
 }
 
 // Transmute a postgres text array into a json text array
