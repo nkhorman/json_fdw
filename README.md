@@ -1,3 +1,10 @@
+Retired
+-------
+
+*This project is currently not recommended as a base for new consumers. If you're
+looking to query semi-structured data, please check the new JSON and
+JSONB data types built into PostgreSQL.*
+
 json_fdw
 ========
 
