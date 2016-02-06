@@ -7,13 +7,26 @@ heterogeneous documents.
 While the original project is now ***Retired***, this project fork is not.
 
 
-Projet Goal
+Project Goal
 ---
 
 The original project is only capable of **Select** operations. ie. read-only, and only from local JSON files. 
 This fork's goals are:
  1. Add the ability to operate on remote JSON content via HTTP operations, in a RESTful style/manner.
  2. Add support for **Update**, **Insert** and **Delete** operations.
+
+
+Progress
+---
+
+ 1. Done
+ 2. I have completed the work for **Update** and **Insert**, and believe them to both function correctly.
+
+
+Todo
+---
+ * Implement **Delete** operation support
+ * Only execute remote ETAG re-validation after aging based on Cache-Control and / or Content-Expires headers.
 
 
 Limitations
@@ -35,16 +48,6 @@ Dependancies
  * [nkhorman/yajl] You'll need to use the \`\`json_path'' branch. **Do not** use the yajl from http://github.com/lloyd/yajl, json\_fdw2 won't compile!
  * [libcurl-7.40.0] Only curl-7.40.0 has been tested.
  * zlib-1.2.8
-
-
-Todo
----
- * Implement **Delete*** operation support
- * Only execute remote ETAG re-validation after aging based on Cache-Control and / or Content-Expires headers.
-
-
-Local caching of the remote content is done, and validated using Entity Tags
-(ETAG header) upon every query of the table content.
 
 
 Building
@@ -166,6 +169,7 @@ not mutally exclusive, however, a given key value pair should only exist in
 one or the other.
 
 The following example shows how to fetch remote files, that are then cached locally.
+Local caching of the remote content is done, and validated using Entity Tags (ETAG header) upon every query of the table content.
 
 **Note**: that the existing handling of Gzip files is supported, because, after the
 file is fetched, it is handed off to the existing file handling code, as if
