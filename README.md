@@ -1,9 +1,7 @@
-Retired
+Moved
 -------
 
-*This project is currently not recommended as a base for new consumers. If you're
-looking to query semi-structured data, please check the new JSON and
-JSONB data types built into PostgreSQL.*
+*Please note that this repository has moved to the actively maintained fork at [nkhorman/json_fdw2](https://github.com/nkhorman/json_fdw2).*
 
 json_fdw
 ========
