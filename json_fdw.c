@@ -11,10 +11,12 @@
  *-------------------------------------------------------------------------
  */
 
+#include <stdio.h>
+#include <stdbool.h>
+
 #include "postgres.h"
 #include "json_fdw.h"
 
-#include <stdio.h>
 #include <sys/stat.h>
 #include <yajl/yajl_tree.h>
 #include <zlib.h>
@@ -52,6 +54,7 @@
 	#include "access/htup_details.h"
 #endif
 
+#include "curlapi.h"
 
 /* Local functions forward declarations */
 static StringInfo OptionNamesString(Oid currentContextId);
@@ -324,6 +327,7 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 	JsonFdwOptions *options = JsonGetOptions(foreignTableId);
 
 	ExplainPropertyText("Json File", options->filename, explainState);
+	ExplainPropertyText("HTTP Post Vars", options->pHttpPostVars, explainState);
 
 	/* supress file size if we're not showing cost details */
 	if (explainState->costs)
@@ -339,6 +343,13 @@ JsonExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 	}
 }
 
+#ifdef DEBUG_WLOGIT
+static void logIt(const char *pStr)
+{
+	if(pStr != NULL)
+		ereport(DEBUG1, (errmsg("%s", pStr)));
+}
+#endif
 
 /*
  * JsonBeginForeignScan opens the underlying json file for reading. The function
@@ -359,6 +370,9 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	bool hdfsBlock = false;
 	FILE *filePointer = NULL;
 	gzFile gzFilePointer = NULL;
+	bool openError = false;
+	const char *filename = NULL;
+	cfr_t *pCfr = NULL;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -375,28 +389,52 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	columnList = (List *) linitial(foreignPrivateList);
 	columnMappingHash = ColumnMappingHash(foreignTableId, columnList);
 
-	gzipFile = GzipFilename(options->filename);
-	hdfsBlock = HdfsBlockName(options->filename);
+	filename = options->filename;
 
-	if (gzipFile || hdfsBlock)
+	// See if this is an off box url, and try to fetch it
+	// and then pass it off to one of the native file handlers
+#ifdef DEBUG_WLOGIT
+	curlLogItSet(&logIt);
+#endif
+	pCfr = curlFetch(filename, options->pHttpPostVars);
+	openError = (pCfr == NULL || !pCfr->bFileFetched);
+	if(!openError)
+		// replace the url with the on box filename of the file that we just
+		// downloaded so that the existing file handlers can just use a file
+		filename = pCfr->ccf.pFileName;
+	ereport(DEBUG1, (errmsg("%s:%s:%u fetched %u, took %lu ms, http response %lu, content type '%s'"
+		, __FILE__, __func__, __LINE__
+		, pCfr->bFileFetched
+		, pCfr->queryDuration
+		, pCfr->httpResponseCode
+		, pCfr->pContentType
+		))
+		);
+
+	if(!openError)
 	{
-		gzFilePointer = gzopen(options->filename, PG_BINARY_R);
-		if (gzFilePointer == NULL)
+		gzipFile = GzipFilename(filename);
+		hdfsBlock = HdfsBlockName(filename);
+
+		if (gzipFile || hdfsBlock)
 		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for reading: %m",
-								   options->filename)));
+			gzFilePointer = gzopen(filename, PG_BINARY_R);
+			openError = (gzFilePointer == NULL);
+		}
+		else
+		{
+			filePointer = AllocateFile(filename, PG_BINARY_R);
+			openError = (filePointer == NULL);
 		}
 	}
-	else
+
+	if (openError)
 	{
-		filePointer = AllocateFile(options->filename, PG_BINARY_R);
-		if (filePointer == NULL)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for reading: %m",
-								   options->filename)));
-		}
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not open file \"%s\" for reading: %m",
+							   options->filename)));
+		curlCfrFree(pCfr);
+		pCfr = NULL;
 	}
 
 	execState = (JsonFdwExecState *) palloc(sizeof(JsonFdwExecState));
@@ -407,6 +445,8 @@ JsonBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	execState->maxErrorCount = options->maxErrorCount;
 	execState->errorCount = 0;
 	execState->currentLineNumber = 0;
+	// we pass this off to EndForeignScan to manage
+	execState->pCfr = pCfr;
 
 	scanState->fdw_state = (void *) execState;
 }
@@ -548,6 +588,8 @@ JsonEndForeignScan(ForeignScanState *scanState)
 		hash_destroy(executionState->columnMappingHash);
 	}
 
+	curlCfrFree(executionState->pCfr);
+
 	pfree(executionState);
 }
 
@@ -560,26 +602,18 @@ JsonEndForeignScan(ForeignScanState *scanState)
 static JsonFdwOptions *
 JsonGetOptions(Oid foreignTableId)
 {
-	JsonFdwOptions *jsonFdwOptions = NULL;
-	char *filename = NULL;
-	int32 maxErrorCount = 0;
-	char *maxErrorCountString = NULL;
+	JsonFdwOptions *jsonFdwOptions = (JsonFdwOptions *) palloc0(sizeof(JsonFdwOptions));
 
-	filename = JsonGetOptionValue(foreignTableId, OPTION_NAME_FILENAME);
+	if(jsonFdwOptions != NULL)
+	{	char *maxErrorCountString = JsonGetOptionValue(foreignTableId, OPTION_NAME_MAX_ERROR_COUNT);
 
-	maxErrorCountString = JsonGetOptionValue(foreignTableId, OPTION_NAME_MAX_ERROR_COUNT);
-	if (maxErrorCountString == NULL)
-	{
-		maxErrorCount = DEFAULT_MAX_ERROR_COUNT;
+		jsonFdwOptions->maxErrorCount = (maxErrorCountString != NULL
+			? pg_atoi(maxErrorCountString, sizeof(int32), 0)
+			: DEFAULT_MAX_ERROR_COUNT
+			);
+		jsonFdwOptions->filename = JsonGetOptionValue(foreignTableId, OPTION_NAME_FILENAME);
+		jsonFdwOptions->pHttpPostVars = JsonGetOptionValue(foreignTableId, OPTION_NAME_HTTP_POST_VARS);
 	}
-	else
-	{
-		maxErrorCount = pg_atoi(maxErrorCountString, sizeof(int32), 0);
-	}
-
-	jsonFdwOptions = (JsonFdwOptions *) palloc0(sizeof(JsonFdwOptions));
-	jsonFdwOptions->filename = filename;
-	jsonFdwOptions->maxErrorCount = maxErrorCount;
 
 	return jsonFdwOptions;
 }
@@ -1138,6 +1172,7 @@ ValidDateTimeFormat(const char *dateTimeString)
 	int parseError = ParseDateTime(dateTimeString, workBuffer, sizeof(workBuffer),
 								   fieldArray, fieldTypeArray, MAXDATEFIELDS, 
 								   &fieldCount);
+
 	if (parseError == 0)
 	{
 		int dateType = 0;
@@ -1159,8 +1194,20 @@ ValidDateTimeFormat(const char *dateTimeString)
 			{
 				validDateTimeFormat = true;
 			}
+#ifdef DEBUG
+			else
+				ereport(DEBUG1, (errmsg("%s:%s:%u invlalid format", __FILE__, __func__, __LINE__)));
+#endif
 		}
+#ifdef DEBUG
+		else
+			ereport(DEBUG1, (errmsg("%s:%s:%u decode error", __FILE__, __func__, __LINE__)));
+#endif
 	}
+#ifdef DEBUG
+	else
+		ereport(DEBUG1, (errmsg("%s:%s:%u parse error", __FILE__, __func__, __LINE__)));
+#endif
 
 	return validDateTimeFormat;
 }

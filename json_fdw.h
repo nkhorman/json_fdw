@@ -20,6 +20,7 @@
 #include "utils/hsearch.h"
 #include "nodes/pg_list.h"
 #include "nodes/relation.h"
+#include "curlapi.h"
 
 
 /* Defines for valid option names and default values */
@@ -27,6 +28,8 @@
 #define OPTION_NAME_MAX_ERROR_COUNT "max_error_count"
 #define OPTION_NAME_HDFS_DIRECTORY_PATH "hdfs_directory_path"
 #define DEFAULT_MAX_ERROR_COUNT 0
+
+#define OPTION_NAME_HTTP_POST_VARS "http_post_vars"
 
 #define JSON_TUPLE_COST_MULTIPLIER 10
 #define ERROR_BUFFER_SIZE 1024
@@ -50,14 +53,16 @@ typedef struct JsonValidOption
 
 
 /* Array of options that are valid for json_fdw */
-static const uint32 ValidOptionCount = 3;
 static const JsonValidOption ValidOptionArray[] =
 {
 	/* foreign table options */
 	{ OPTION_NAME_FILENAME, ForeignTableRelationId },
 	{ OPTION_NAME_MAX_ERROR_COUNT, ForeignTableRelationId },
-	{ OPTION_NAME_HDFS_DIRECTORY_PATH, ForeignTableRelationId }
+	{ OPTION_NAME_HDFS_DIRECTORY_PATH, ForeignTableRelationId },
+	{ OPTION_NAME_HTTP_POST_VARS, ForeignTableRelationId },
 };
+// Never maintain by hand, what the compiler could do for you
+static const uint32 ValidOptionCount = (sizeof(ValidOptionArray)/sizeof(ValidOptionArray[0]));
 
 
 /*
@@ -70,6 +75,7 @@ typedef struct JsonFdwOptions
 {
 	char *filename;
 	int32 maxErrorCount;
+	const char *pHttpPostVars;
 
 } JsonFdwOptions;
 
@@ -87,6 +93,7 @@ typedef struct JsonFdwExecState
 	uint32 errorCount;
 	uint32 currentLineNumber;
 	HTAB *columnMappingHash;
+	cfr_t *pCfr;
 
 } JsonFdwExecState;
 
