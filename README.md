@@ -4,8 +4,6 @@ json_fdw2
 **json_fdw2** is a fork of the [citusdata/json_fdw] PostgreSQL Foreign Data Wrapper (FDW) extension project, to query locally stored JSON files, and supports analytic queries against array types, nested fields, and
 heterogeneous documents.
 
-While the original project is now ***Retired***, this project fork is not.
-
 
 Project Goal
 ---
@@ -346,11 +344,6 @@ Portions Copyright (c) 2013 Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 GNU GPL v3.0 License.
-
-For all types of questions and comments about the wrapper, please contact us at
-engage @ citusdata.com.
-
-
 
 
 
