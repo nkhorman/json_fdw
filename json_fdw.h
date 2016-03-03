@@ -19,14 +19,19 @@
 #include "catalog/pg_foreign_table.h"
 #include "utils/hsearch.h"
 #include "nodes/pg_list.h"
-#include "nodes/relation.h"
+#include "utils/rel.h"
+
+#include "curlapi.h"
 
 
 /* Defines for valid option names and default values */
 #define OPTION_NAME_FILENAME "filename"
 #define OPTION_NAME_MAX_ERROR_COUNT "max_error_count"
-#define OPTION_NAME_HDFS_DIRECTORY_PATH "hdfs_directory_path"
 #define DEFAULT_MAX_ERROR_COUNT 0
+
+#define OPTION_NAME_HTTP_POST_VARS "http_post_vars"
+#define OPTION_NAME_ROM_URL "rom_url"
+#define OPTION_NAME_ROM_PATH "rom_path"
 
 #define JSON_TUPLE_COST_MULTIPLIER 10
 #define ERROR_BUFFER_SIZE 1024
@@ -49,17 +54,6 @@ typedef struct JsonValidOption
 } JsonValidOption;
 
 
-/* Array of options that are valid for json_fdw */
-static const uint32 ValidOptionCount = 3;
-static const JsonValidOption ValidOptionArray[] =
-{
-	/* foreign table options */
-	{ OPTION_NAME_FILENAME, ForeignTableRelationId },
-	{ OPTION_NAME_MAX_ERROR_COUNT, ForeignTableRelationId },
-	{ OPTION_NAME_HDFS_DIRECTORY_PATH, ForeignTableRelationId }
-};
-
-
 /*
  * JsonFdwOptions holds the option values to be used when reading and parsing
  * the json file. To resolve these values, we first check foreign table's 
@@ -68,9 +62,11 @@ static const JsonValidOption ValidOptionArray[] =
  */
 typedef struct JsonFdwOptions
 {
-	char *filename;
+	char const *filename;
 	int32 maxErrorCount;
-
+	char const *pHttpPostVars;
+	char const *pRomUrl;
+	char const *pRomPath;
 } JsonFdwOptions;
 
 
@@ -80,15 +76,32 @@ typedef struct JsonFdwOptions
  */
 typedef struct JsonFdwExecState
 {
-	char *filename;
-	FILE *filePointer;
-	void *gzFilePointer;
+	char const *filename;		// on disk file name of json content
+	FILE *filePointer;		// file pointer to on disk content
+	void *gzFilePointer;		// gz file pointe to on disk content
+
 	uint32 maxErrorCount;
 	uint32 errorCount;
 	uint32 currentLineNumber;
 	HTAB *columnMappingHash;
 
+	cfr_t *pCfr;			// curl fetch result
 } JsonFdwExecState;
+
+typedef struct _jfmes_t
+{
+	Relation rel;			// relcache entry for the foriegn table
+	int p_nums;			// number of parameters to transmit
+	FmgrInfo *p_flinfo;		// output conversion functions for them
+
+	List *retrieved_attrs;		// list of target attribute members
+	List *retrieved_names;		// list of target attribute names
+	List *table_options;
+	char const *pUrl;		// put url
+
+	MemoryContext temp_cxt;		// context for per-tuple temp data
+
+} jfmes_t; // Json Fdw Modify Exec State Type
 
 
 /*

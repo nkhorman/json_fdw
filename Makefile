@@ -2,7 +2,7 @@
 
 MODULE_big = json_fdw
 
-OBJS = json_fdw.o
+OBJS = json_fdw.o curlapi.o regexapi.o regexapi_helper.o gettickcount.o rciapi.o
 
 ifeq ($(shell uname -s), Linux)
     # Directly link against yajl 2, so it works in Ubuntu 12.04 too.
@@ -27,6 +27,33 @@ EXTRA_CLEAN = sql/basic_tests.sql expected/basic_tests.out \
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.2/bin/pg_config
 #
 
-PG_CONFIG = pg_config
+# find pg_config
+OS:=$(shell uname -s)
+PG_CONFIG:= $(shell which pg_config)
+FIND_ROOTPATH:= "/"
+ifeq (${OS},Darwin)
+FIND_ROOTPATH:= $(shell if [ -d "/Applications" ]; then echo "/Applications"; else echo "/"; fi)
+endif
+PG_CONFIG:= $(shell if [ ! -e "pg_config.loc" ]; then find $(FIND_ROOTPATH) -name pg_config > pg_config.loc; fi; cat pg_config.loc)
+
+# for localy built uinstalled libraries, do this
+YAJLDIR= ../yajl.git/build/yajl-2.1.1
+PG_CPPFLAGS+= -I$(YAJLDIR)/include
+SHLIB_LINK+= -L$(YAJLDIR)/lib
+
+ZLIBDIR= ../zlib-1.2.8
+PG_CPPFLAGS+= -I$(ZLIBDIR)
+SHLIB_LINK+= -L$(ZLIBDIR)
+
+# for localy build uninstalled curl, do this
+CURLDIR= ../curl-7.40.0
+PG_CPPFLAGS+= -I$(CURLDIR)/include
+SHLIB_LINK+= -L$(CURLDIR)/lib/.libs -lcurl -lssl -lcrypto
+
+# for system version of curl, do this
+#CURL_CONFIG:= $(shell which curl-config)
+#PG_CPPFLAGS+= $(shell sh $(CURL_CONFIG) --cflags)
+#SHLIB_LINK+= $(shell sh $(CUR_CONFIG) --static-libs)
+
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
